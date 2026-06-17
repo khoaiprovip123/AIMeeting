@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Global Safety and Validation Helpers
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+    function incoming() { 
+      return request.resource.data; 
+    }
+    function existing() { 
+      return resource.data; 
+    }
+    function isSignedIn() { 
+      return request.auth != null; 
+    }
+
+    // 3. Schema validator for Meeting entity
+    // Enforces zero-trust attribute checks, identity integrity and basic types
+    function isValidMeeting(data) {
+      return data.userId is string 
+          && data.userId.size() <= 128
+          && data.userId == request.auth.uid
+          && data.language is string 
+          && (data.language == 'vi' || data.language == 'en')
+          && data.transcript is list
+          && data.createdAt != null;
+    }
+
+    // 4. Meeting Collection Matcher Rules
+    match /meetings/{meetingId} {
+      allow get: if isSignedIn() && isValidId(meetingId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      // Allow create if auth matches, ID is valid, and content passes basic constraints
+      allow create: if isSignedIn() 
+                    && isValidId(meetingId) 
+                    && isValidMeeting(incoming()) 
+                    && (incoming().createdAt == request.time || incoming().createdAt != null);
+                    
+      // Allow update if ownership matches, and we don't transfer ownership
+      allow update: if isSignedIn() 
+                    && isValidId(meetingId) 
+                    && isValidMeeting(incoming()) 
+                    && resource.data.userId == request.auth.uid
+                    && incoming().userId == resource.data.userId;
+                    
+      allow delete: if isSignedIn() && isValidId(meetingId) && resource.data.userId == request.auth.uid;
+    }
+    
+    // Support test connection check
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}

@@ -25,6 +25,8 @@ export interface Overview {
 }
 
 export interface AnalysisResult {
+  category?: string; // Auto-generated category, e.g., 'Project', 'Marketing', 'Technical', 'HR', 'Finance', 'Operations', 'General' etc.
+  tags?: string[]; // Auto-generated tags/labels automatically assigned by Gemini API (e.g., 'Internal', 'Client', 'Technical', 'Urgent')
   overview: Overview;
   mainObjectives: string[];
   discussionSummary: string;

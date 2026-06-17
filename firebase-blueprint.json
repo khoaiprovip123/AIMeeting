@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "Meeting": {
+      "title": "Meeting Analysis",
+      "description": "A saved meeting analysis report with overview, transcript, and agenda items.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The Google User UUID who owns this meeting analysis."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the analysis was saved."
+        },
+        "audioFileName": {
+          "type": "string",
+          "description": "The name of the analyzed audio file."
+        },
+        "language": {
+          "type": "string",
+          "enum": ["vi", "en"],
+          "description": "The language of the analysis."
+        },
+        "result": {
+          "type": "object",
+          "description": "The JSON analysis output containing overview, main objectives, discussion summary, decisions, action items, pending issues, and notes."
+        },
+        "transcript": {
+          "type": "array",
+          "description": "A structured transcript with speaker tags and timestamps."
+        }
+      },
+      "required": ["userId", "createdAt", "language", "result", "transcript"]
+    }
+  },
+  "firestore": {
+    "/meetings/{meetingId}": {
+      "schema": "Meeting",
+      "description": "Saved meeting analyses categorized by unique meeting document IDs."
+    }
+  }
+}

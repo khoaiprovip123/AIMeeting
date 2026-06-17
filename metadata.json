@@ -1,6 +1,7 @@
 {
   "name": "Trợ lý Họp AI (AI Meeting Assistant)",
-  "description": "An AI-powered application to automatically transcribe, summarize, and analyze meeting audio/video files in Vietnamese and English.",
+  "description": "Một ứng dụng sử dụng AI để tự động gỡ băng, tóm tắt và phân tích các tệp âm thanh/video của cuộc họp bằng tiếng Việt và tiếng Anh.",
   "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"],
   "prompt": ""
 }
