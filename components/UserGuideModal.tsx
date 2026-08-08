@@ -554,10 +554,19 @@ export const UserGuideModal: React.FC<UserGuideModalProps> = ({ isOpen, onClose 
           </div>
 
           {/* Footer - Elegant unified glass footer */}
-          <div className="border-t border-white/40 p-4 bg-slate-50/70 backdrop-blur-md flex justify-end">
+          <div className="border-t border-white/40 p-4 bg-slate-50/70 backdrop-blur-md flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4 flex-shrink-0">
+            <div className="flex items-center space-x-2.5 bg-gradient-to-r from-sky-500/5 via-indigo-500/5 to-transparent px-3 py-1.5 rounded-full border border-sky-500/10 backdrop-blur-md select-none group">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-sky-500"></span>
+              </span>
+              <span className="text-[10px] sm:text-xs font-mono font-black text-slate-500 tracking-wide uppercase">
+                {language === 'vi' ? 'Thiết kế & phát triển bởi Vkhoai' : 'Designed & developed by Vkhoai'}
+              </span>
+            </div>
             <button
               onClick={onClose}
-              className="bg-gradient-to-r from-sky-500 to-indigo-600 text-white font-extrabold font-display py-2.5 px-6 rounded-2xl text-xs sm:text-sm transition-all duration-300 active:scale-95 shadow-lg shadow-sky-500/15 hover:from-sky-600 hover:to-indigo-700 cursor-pointer"
+              className="bg-gradient-to-r from-sky-500 to-indigo-650 text-white font-extrabold font-display py-2.5 px-6 rounded-2xl text-xs sm:text-sm transition-all duration-300 active:scale-95 shadow-lg shadow-sky-500/15 hover:from-sky-600 hover:to-indigo-700 cursor-pointer w-full sm:w-auto text-center"
             >
               {language === 'vi' ? 'Tôi Đã Hiểu (Đóng)' : 'I Understand (Close)'}
             </button>

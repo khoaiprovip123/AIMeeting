@@ -1,10 +1,11 @@
 
-import React, { useState, useRef, useEffect, useMemo } from 'react';
-import type { AnalysisResult, TranscriptSegment } from '../types';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import type { AnalysisResult, TranscriptSegment, DocumentTemplate, ExportFormat } from '../types';
 import { ClipboardIcon, CheckIcon, TagIcon, CalendarIcon, ClockIcon, MapPinIcon, UsersIcon, BookOpenIcon, TrashIcon, DownloadIcon, EmailIcon } from './Icons';
 import { useTranslation } from '../i18n';
 import { geminiService } from '../services/geminiService';
-import { initAuth, googleSignIn, getAccessToken, createGmailDraft, uploadDocxToGoogleDrive, logout } from '../services/googleAuthService';
+import { initAuth, googleSignIn, getAccessToken, createGmailDraft, uploadDocxToGoogleDrive, logout, syncTaskToGoogleTasks, syncAllActionItemsToGoogleTasks } from '../services/googleAuthService';
 import type { User } from 'firebase/auth';
 import { HelpTooltip } from './HelpTooltip';
 
@@ -61,9 +62,11 @@ interface AutoResizingTextareaProps {
   onChange: (value: string) => void;
   index: number;
   isActive: boolean;
+  isBold?: boolean;
+  isImportant?: boolean;
 }
 
-const AutoResizingTextarea: React.FC<AutoResizingTextareaProps> = ({ value, onChange, index, isActive }) => {
+const AutoResizingTextarea: React.FC<AutoResizingTextareaProps> = ({ value, onChange, index, isActive, isBold, isImportant }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const adjustHeight = () => {
@@ -96,7 +99,10 @@ const AutoResizingTextarea: React.FC<AutoResizingTextareaProps> = ({ value, onCh
       onChange={(e) => onChange(e.target.value)}
       onInput={adjustHeight}
       aria-label={`Transcript segment ${index + 1}`}
-      className="w-full bg-transparent border-0 rounded-xl resize-none leading-relaxed focus:bg-white focus:ring-1 focus:ring-sky-500 focus:p-3 p-1 text-slate-750 hover:text-slate-900 text-sm font-sans transition-all duration-250 focus:shadow-sm"
+      className={`w-full bg-transparent border-0 rounded-xl resize-none leading-relaxed focus:bg-white focus:ring-1 focus:ring-sky-500 focus:p-3 p-1 hover:text-slate-900 text-sm font-sans transition-all duration-250 focus:shadow-sm
+        ${isBold ? 'font-bold' : 'font-normal'}
+        ${isImportant ? 'text-amber-900 bg-amber-500/10 shadow-[inner_0_1px_3px_rgba(245,158,11,0.05)] px-3 py-2 rounded-xl border border-amber-200/50' : 'text-slate-750'}
+      `}
       rows={1} 
     />
   );
@@ -424,17 +430,199 @@ const SlackEmailExporter: React.FC<{ result: AnalysisResult; language: string }>
     );
 };
 
+interface TabItem {
+    id: string;
+    label: string;
+    icon: React.ReactNode;
+    badgeCount?: number;
+    hasData: boolean;
+    content: React.ReactNode;
+}
+
+const LiquidGlassTabsBar: React.FC<{
+    tabs: TabItem[];
+    activeTab: string;
+    setActiveTab: (id: string) => void;
+    tooltipText: string;
+}> = ({ tabs, activeTab, setActiveTab, tooltipText }) => {
+    const visibleTabs = tabs.filter(t => t.hasData);
+
+    return (
+        <div className="relative mb-6">
+            <div className="relative bg-white/40 backdrop-blur-2xl border border-white/80 p-1 sm:p-1.5 rounded-2xl sm:rounded-full shadow-[0_8px_24px_-4px_rgba(31,38,135,0.07),_inset_0_1px_2px_0_rgba(255,255,255,0.95)] flex items-center justify-between gap-1">
+                <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-1 flex-grow w-full">
+                    {visibleTabs.map((tab) => {
+                        const isActive = activeTab === tab.id;
+                        return (
+                            <button
+                                key={tab.id}
+                                onClick={() => setActiveTab(tab.id)}
+                                className={`relative flex-1 min-w-[100px] sm:min-w-0 flex items-center justify-center space-x-1.5 py-2 px-2 sm:py-2.5 sm:px-3 rounded-xl sm:rounded-full font-black text-[11px] sm:text-xs md:text-[12.5px] tracking-tight transition-all duration-200 cursor-pointer select-none group z-10 ${
+                                    isActive
+                                        ? 'text-slate-900 font-black'
+                                        : 'text-slate-600 hover:text-slate-900 hover:bg-white/30 font-extrabold'
+                                }`}
+                            >
+                                {isActive && (
+                                    <motion.div
+                                        layoutId="activeLiquidTabPill"
+                                        className="absolute inset-0 rounded-xl sm:rounded-full bg-gradient-to-r from-white/95 via-white to-sky-50/90 shadow-[0_4px_16px_-2px_rgba(14,165,233,0.18),_0_2px_6px_rgba(0,0,0,0.05),_inset_0_1.5px_2px_rgba(255,255,255,1)] border border-white ring-1 ring-sky-400/30 -z-10"
+                                        transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                                    />
+                                )}
+
+                                <span className="shrink-0 transition-transform duration-200 group-hover:scale-110">
+                                    {tab.icon}
+                                </span>
+
+                                <span className="truncate">{tab.label}</span>
+
+                                {typeof tab.badgeCount === 'number' && tab.badgeCount > 0 && (
+                                    <span
+                                        className={`shrink-0 ml-0.5 px-1.5 py-0.2 rounded-full text-[9.5px] font-mono font-extrabold transition-all ${
+                                            isActive
+                                                ? 'bg-sky-500 text-white shadow-sky-500/20'
+                                                : 'bg-slate-200/80 text-slate-700 group-hover:bg-slate-300'
+                                        }`}
+                                    >
+                                        {tab.badgeCount}
+                                    </span>
+                                )}
+                            </button>
+                        );
+                    })}
+                </div>
+
+                <div className="shrink-0 pl-1 border-l border-slate-200/50 flex items-center pr-1">
+                    <HelpTooltip content={tooltipText} position="bottom-left" />
+                </div>
+            </div>
+        </div>
+    );
+};
+
 const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updated: AnalysisResult) => void }> = ({ result, onUpdateResult }) => {
     const [activeTab, setActiveTab] = useState('overview');
     const { t, language } = useTranslation();
     const [completedTasks, setCompletedTasks] = useState<Record<number, boolean>>({});
     const [copiedDecisionIndex, setCopiedDecisionIndex] = useState<number | null>(null);
 
+    // Google Tasks sync state
+    const [isSyncingAllTasks, setIsSyncingAllTasks] = useState(false);
+    const [syncingSingleIndex, setSyncingSingleIndex] = useState<number | null>(null);
+    const [syncedTaskIndexes, setSyncedTaskIndexes] = useState<Set<number>>(new Set());
+    const [tasksToast, setTasksToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
     const [isEditingOverview, setIsEditingOverview] = useState(false);
     const [editedTopic, setEditedTopic] = useState('');
     const [editedDateTime, setEditedDateTime] = useState('');
     const [editedLocation, setEditedLocation] = useState('');
     const [editedAttendees, setEditedAttendees] = useState('');
+    const [isSuggestingTitle, setIsSuggestingTitle] = useState(false);
+    const [copiedSummary, setCopiedSummary] = useState(false);
+
+    const handleSyncSingleTaskToGoogleTasks = async (item: ActionItem, index: number) => {
+        setSyncingSingleIndex(index);
+        try {
+            await syncTaskToGoogleTasks(item, result.overview.topic);
+            setSyncedTaskIndexes(prev => new Set(prev).add(index));
+            setTasksToast({
+                type: 'success',
+                message: language === 'vi' 
+                    ? `Đã thêm công việc "${item.task.slice(0, 32)}..." vào Google Tasks!`
+                    : `Added task "${item.task.slice(0, 32)}..." to Google Tasks!`
+            });
+            setTimeout(() => setTasksToast(null), 4000);
+        } catch (error: any) {
+            if (error?.message === 'TOKEN_REQUIRED' || error?.message === 'TOKEN_EXPIRED') {
+                try {
+                    await googleSignIn();
+                    await syncTaskToGoogleTasks(item, result.overview.topic);
+                    setSyncedTaskIndexes(prev => new Set(prev).add(index));
+                    setTasksToast({
+                        type: 'success',
+                        message: language === 'vi' 
+                            ? `Đã thêm công việc "${item.task.slice(0, 32)}..." vào Google Tasks!`
+                            : `Added task "${item.task.slice(0, 32)}..." to Google Tasks!`
+                    });
+                    setTimeout(() => setTasksToast(null), 4000);
+                } catch (authErr) {
+                    console.error("Google auth error:", authErr);
+                    setTasksToast({
+                        type: 'error',
+                        message: language === 'vi'
+                            ? 'Cần đăng nhập Google để đồng bộ Google Tasks.'
+                            : 'Google login required to sync to Google Tasks.'
+                    });
+                    setTimeout(() => setTasksToast(null), 4000);
+                }
+            } else {
+                console.error("Sync task error:", error);
+                setTasksToast({
+                    type: 'error',
+                    message: language === 'vi' ? 'Không thể kết nối Google Tasks.' : 'Error connecting to Google Tasks.'
+                });
+                setTimeout(() => setTasksToast(null), 4000);
+            }
+        } finally {
+            setSyncingSingleIndex(null);
+        }
+    };
+
+    const handleSyncAllTasksToGoogleTasks = async () => {
+        if (!result.actionItems || result.actionItems.length === 0) return;
+        setIsSyncingAllTasks(true);
+        try {
+            const { successCount } = await syncAllActionItemsToGoogleTasks(result.actionItems, result.overview.topic);
+            const allSet = new Set<number>();
+            result.actionItems.forEach((_, idx) => allSet.add(idx));
+            setSyncedTaskIndexes(allSet);
+
+            setTasksToast({
+                type: 'success',
+                message: language === 'vi'
+                    ? `Thành công! Đã đồng bộ ${successCount} công việc vào Google Tasks.`
+                    : `Success! Synced ${successCount} tasks to Google Tasks.`
+            });
+            setTimeout(() => setTasksToast(null), 5000);
+        } catch (error: any) {
+            if (error?.message === 'TOKEN_REQUIRED' || error?.message === 'TOKEN_EXPIRED') {
+                try {
+                    await googleSignIn();
+                    const { successCount } = await syncAllActionItemsToGoogleTasks(result.actionItems, result.overview.topic);
+                    const allSet = new Set<number>();
+                    result.actionItems.forEach((_, idx) => allSet.add(idx));
+                    setSyncedTaskIndexes(allSet);
+
+                    setTasksToast({
+                        type: 'success',
+                        message: language === 'vi'
+                            ? `Thành công! Đã đồng bộ ${successCount} công việc vào Google Tasks.`
+                            : `Success! Synced ${successCount} tasks to Google Tasks.`
+                    });
+                    setTimeout(() => setTasksToast(null), 5000);
+                } catch (authErr) {
+                    console.error("Google auth error:", authErr);
+                    setTasksToast({
+                        type: 'error',
+                        message: language === 'vi'
+                            ? 'Cần đăng nhập tài khoản Google để đồng bộ Google Tasks.'
+                            : 'Google login required to sync to Google Tasks.'
+                    });
+                    setTimeout(() => setTasksToast(null), 4000);
+                }
+            } else {
+                console.error("Sync all tasks error:", error);
+                setTasksToast({
+                    type: 'error',
+                    message: language === 'vi' ? 'Không thể đồng bộ vào Google Tasks.' : 'Failed to sync to Google Tasks.'
+                });
+                setTimeout(() => setTasksToast(null), 4000);
+            }
+        } finally {
+            setIsSyncingAllTasks(false);
+        }
+    };
 
     useEffect(() => {
         if (result) {
@@ -444,6 +632,25 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
             setEditedAttendees((result.overview.attendees || []).join(', '));
         }
     }, [result]);
+
+    const handleSuggestTitle = async () => {
+        setIsSuggestingTitle(true);
+        try {
+            const content = `
+Summary/Discussion: ${result.discussionSummary || ''}
+Objectives: ${(result.mainObjectives || []).join(', ')}
+Current Title/Topic: ${editedTopic || ''}
+`;
+            const suggested = await geminiService.generateSuggestedTitle(content, language);
+            if (suggested) {
+                setEditedTopic(suggested);
+            }
+        } catch (error) {
+            console.error("Failed to suggest title via AI:", error);
+        } finally {
+            setIsSuggestingTitle(false);
+        }
+    };
 
     const handleSaveOverview = () => {
         if (onUpdateResult) {
@@ -470,6 +677,36 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
         navigator.clipboard.writeText(text);
         setCopiedDecisionIndex(idx);
         setTimeout(() => setCopiedDecisionIndex(null), 2000);
+    };
+
+    const toggleDecisionImportant = (idx: number) => {
+        if (onUpdateResult) {
+            const updatedDecisions = (result.decisions || []).map((d, i) => {
+                if (i === idx) {
+                    return { ...d, isImportant: !d.isImportant };
+                }
+                return d;
+            });
+            onUpdateResult({
+                ...result,
+                decisions: updatedDecisions
+            });
+        }
+    };
+
+    const toggleDecisionBold = (idx: number) => {
+        if (onUpdateResult) {
+            const updatedDecisions = (result.decisions || []).map((d, i) => {
+                if (i === idx) {
+                    return { ...d, isBold: !d.isBold };
+                }
+                return d;
+            });
+            onUpdateResult({
+                ...result,
+                decisions: updatedDecisions
+            });
+        }
     };
 
     const getTabTheme = (id: string, isActive: boolean) => {
@@ -510,6 +747,37 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
         return isActive ? theme.active : theme.inactive;
     };
 
+    const getCleanDiscussionSummary = (text: string) => {
+        if (!text || typeof text !== 'string') return '';
+        let cleaned = text
+            .replace(/\\n/g, '\n')
+            .replace(/\\r/g, '')
+            .replace(/\r/g, '');
+
+        // 1. Remove main document title line e.g. "# MEMO CUỘC HỌP" or "# MEETING MEMO"
+        cleaned = cleaned.replace(/^#+\s+(MEMO CUỘC HỌP|MEETING MEMO|MEMO|BIÊN BẢN HỌP)[^\n]*\n*/i, '');
+
+        // 2. Remove Section 1 (1. Tổng quan cuộc họp / General Information / Overview) block if present
+        cleaned = cleaned.replace(/(?:##?\s*)?1\.\s*(Tổng quan cuộc họp|Tổng quan|Thông tin chung|General Information|Overview)[\s\S]*?(?=(?:##?\s*)?[23]\.|\n\s*(?:-\s*|\*\s*|\d+\.\s*)[A-ZÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴĐ])/i, '');
+
+        // 3. Remove Section 4 (4. Nội dung trao đổi chi tiết / Detailed Discussion) and any following detailed tables/sections
+        cleaned = cleaned.replace(/(?:##?\s*)?4\.\s*(Nội dung trao đổi chi tiết|Detailed Discussion)[\s\S]*/i, '');
+
+        // 4. Remove Section 5 & 6 if they appear in text
+        cleaned = cleaned.replace(/(?:##?\s*)?[56]\.\s*(Danh sách quyết định|Quyết định|Decisions|Công việc|Action Items|Tasks|Tồn đọng|Ghi chú)[\s\S]*/i, '');
+
+        // 5. Remove leftover markdown tables (lines starting with '|')
+        cleaned = cleaned.replace(/^\s*\|.*\|.*$/gm, '');
+
+        // 6. Strip out redundant section headings like "2. Tóm tắt các Nội dung Thảo luận Chính", "3. Tóm tắt điều hành"
+        cleaned = cleaned.replace(/^(?:##?\s*)?(?:\d+\.\s*)?(Tóm tắt các Nội dung Thảo luận Chính|Tóm tắt điều hành|Executive Summary|Tóm tắt thảo luận)[^\n]*/gmi, '');
+
+        // 7. Clean up multiple blank lines
+        cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+        return cleaned;
+    };
+
     const renderMarkdown = (text: string) => {
         if (!text || typeof text !== 'string') {
             return <p className="text-slate-400 font-medium italic">{t('noContent')}</p>;
@@ -524,6 +792,7 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
         const lines = cleanedText.split('\n').filter(p => p.trim() !== '');
         const elements: React.ReactNode[] = [];
         let currentListItems: React.ReactNode[] = [];
+        let currentTableRows: string[] = [];
 
         const formatInlineStyles = (txt: string) => {
             const parts = txt.split(/(\*\*.*?\*\*)/g);
@@ -546,17 +815,71 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
             }
         };
 
+        const flushTable = () => {
+            if (currentTableRows.length > 0) {
+                const validRows = currentTableRows.filter(r => !/^\s*\|?\s*:?-+:?\s*(\|?\s*:?-+:?\s*)*\|?\s*$/.test(r.trim()));
+                if (validRows.length > 0) {
+                    const parseCells = (rowStr: string) => {
+                        let cells = rowStr.trim().split('|');
+                        if (cells[0] === '') cells.shift();
+                        if (cells[cells.length - 1] === '') cells.pop();
+                        return cells.map(c => c.trim());
+                    };
+
+                    const headerCells = parseCells(validRows[0]);
+                    const bodyRows = validRows.slice(1).map(parseCells);
+
+                    elements.push(
+                        <div key={`table-${elements.length}`} className="my-5 overflow-x-auto border border-slate-200/80 rounded-2xl shadow-sm bg-white/95">
+                            <table className="w-full text-left border-collapse text-xs sm:text-sm font-sans">
+                                <thead className="bg-slate-900 text-white font-bold font-display uppercase tracking-wider text-[11px] sm:text-xs">
+                                    <tr>
+                                        {headerCells.map((h, i) => (
+                                            <th key={i} className="px-4 py-3 border-b border-slate-800 font-semibold">{formatInlineStyles(h)}</th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 text-slate-700">
+                                    {bodyRows.map((r, rIdx) => (
+                                        <tr key={rIdx} className={rIdx % 2 === 0 ? 'bg-white hover:bg-slate-50/80' : 'bg-slate-50/60 hover:bg-slate-100/80'}>
+                                            {r.map((c, cIdx) => (
+                                                <td key={cIdx} className="px-4 py-3 leading-relaxed font-normal align-top">{formatInlineStyles(c)}</td>
+                                            ))}
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    );
+                }
+                currentTableRows = [];
+            }
+        };
+
+        const flushAll = () => {
+            flushList();
+            flushTable();
+        };
+
         lines.forEach((line, index) => {
             const trimmedLine = line.trim();
-            if (trimmedLine.startsWith('## ') || trimmedLine.startsWith('### ')) {
+            if (trimmedLine.startsWith('|')) {
                 flushList();
+                currentTableRows.push(trimmedLine);
+            } else if (trimmedLine.startsWith('# ') || trimmedLine.startsWith('## ') || trimmedLine.startsWith('### ') || trimmedLine.startsWith('#### ')) {
+                flushAll();
                 const titleText = trimmedLine.replace(/^#+\s+/, '');
+                const isMainHeading = trimmedLine.startsWith('# ') || trimmedLine.startsWith('## ');
                 elements.push(
-                    <h4 key={index} className="text-lg sm:text-xl font-extrabold text-slate-800 font-display mt-6 mb-3 tracking-tight leading-snug">
+                    <h4 key={index} className={isMainHeading
+                        ? "text-xl sm:text-2xl font-black text-slate-900 font-display mt-8 mb-4 tracking-tight leading-snug pb-2 border-b border-slate-200/80"
+                        : "text-lg sm:text-xl font-extrabold text-slate-800 font-display mt-6 mb-3 tracking-tight leading-snug"
+                    }>
                         {formatInlineStyles(titleText)}
                     </h4>
                 );
             } else if (trimmedLine.startsWith('* ') || trimmedLine.startsWith('- ')) {
+                flushTable();
                 const itemText = trimmedLine.substring(2);
                 currentListItems.push(
                     <li key={index} className="flex items-start gap-2.5 text-slate-655 leading-relaxed">
@@ -565,7 +888,7 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                     </li>
                 );
             } else {
-                flushList();
+                flushAll();
                 elements.push(
                     <p key={index} className="leading-relaxed hover:text-slate-950 transition-colors my-3 text-slate-700 font-sans sm:text-[14.5px] text-sm">
                         {formatInlineStyles(trimmedLine)}
@@ -573,7 +896,7 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                 );
             }
         });
-        flushList();
+        flushAll();
         return elements.length > 0 ? <div className="space-y-1">{elements}</div> : <p className="text-slate-400 font-medium italic">{t('noContentToShow')}</p>;
     };
 
@@ -648,13 +971,36 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                                 <div className="min-w-0 flex-1">
                                     <span className="text-xs font-mono font-black text-sky-600 uppercase tracking-widest block mb-1 leading-none">{t('topic')}</span>
                                     {isEditingOverview ? (
-                                        <textarea
-                                            value={editedTopic}
-                                            onChange={(e) => setEditedTopic(e.target.value)}
-                                            className="w-full mt-1.5 p-2 text-sm border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-1 focus:ring-sky-500 bg-slate-50/50 focus:bg-white resize-none"
-                                            rows={2}
-                                            aria-label="Topic"
-                                        />
+                                        <div className="space-y-2 mt-1.5 min-w-0">
+                                            <textarea
+                                                value={editedTopic}
+                                                onChange={(e) => setEditedTopic(e.target.value)}
+                                                className="w-full p-2 text-sm border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-1 focus:ring-sky-500 bg-slate-50/50 focus:bg-white resize-none"
+                                                rows={2}
+                                                aria-label="Topic"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={handleSuggestTitle}
+                                                disabled={isSuggestingTitle}
+                                                className="flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 hover:bg-indigo-100/70 active:scale-95 transition-all duration-150 disabled:opacity-50 disabled:pointer-events-none shadow-[0_2px_4px_rgba(99,102,241,0.05)]"
+                                            >
+                                                {isSuggestingTitle ? (
+                                                    <>
+                                                        <svg className="animate-spin h-3.5 w-3.5 text-indigo-600 animate-pulse" viewBox="0 0 24 24" fill="none">
+                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                                                        </svg>
+                                                        <span>{language === 'vi' ? 'Đang tạo gợi ý...' : 'Suggesting title...'}</span>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <span className="text-sm">🪄</span>
+                                                        <span>{language === 'vi' ? 'AI Gợi ý tiêu đề thông minh' : 'AI Suggest Intelligent Title'}</span>
+                                                    </>
+                                                )}
+                                            </button>
+                                        </div>
                                     ) : (
                                         <span className="text-slate-800 font-extrabold text-sm leading-relaxed block">{result.overview.topic}</span>
                                     )}
@@ -765,8 +1111,52 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                         </svg>
                     }
                 >
-                    <div className="space-y-2 text-slate-850">
-                        {renderMarkdown(result.discussionSummary)}
+                    <div className="space-y-6">
+                        {/* Executive Summary Utility Bar */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 px-4 bg-slate-50/80 border border-slate-200/60 rounded-2xl">
+                            <div className="flex items-center gap-2">
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-100/70 text-indigo-700 text-xs font-bold font-sans">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-pulse" />
+                                    {language === 'vi' ? 'Báo cáo Tóm tắt Executive' : 'Executive Briefing'}
+                                </span>
+                                <span className="text-xs text-slate-500 font-medium hidden sm:inline">
+                                    ⚡ ~{Math.max(1, Math.ceil((getCleanDiscussionSummary(result.discussionSummary) || '').split(/\s+/).length / 200))} {language === 'vi' ? 'phút đọc' : 'min read'}
+                                </span>
+                            </div>
+
+                            <button
+                                onClick={() => {
+                                    const cleanText = getCleanDiscussionSummary(result.discussionSummary);
+                                    navigator.clipboard.writeText(cleanText);
+                                    setCopiedSummary(true);
+                                    setTimeout(() => setCopiedSummary(false), 2000);
+                                }}
+                                className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-700 bg-white hover:bg-slate-100/80 border border-slate-200 shadow-sm transition-all duration-150 active:scale-95 cursor-pointer"
+                                title={language === 'vi' ? 'Sao chép toàn bộ tóm tắt' : 'Copy summary to clipboard'}
+                            >
+                                {copiedSummary ? (
+                                    <>
+                                        <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                        </svg>
+                                        <span className="text-emerald-700">{language === 'vi' ? 'Đã sao chép!' : 'Copied!'}</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg className="w-3.5 h-3.5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                        </svg>
+                                        <span>{language === 'vi' ? 'Sao chép Tóm tắt' : 'Copy Summary'}</span>
+                                    </>
+                                )}
+                            </button>
+                        </div>
+
+                        {/* Summary Content Body */}
+                        <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200/60 shadow-sm text-slate-850 space-y-4 font-sans text-base leading-relaxed">
+                            {renderMarkdown(getCleanDiscussionSummary(result.discussionSummary))}
+                        </div>
                     </div>
                 </ReportSection>
             )
@@ -782,6 +1172,7 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                 </svg>
             ),
             hasData: result.decisions.length > 0,
+            badgeCount: result.decisions.length,
             content: (
                 <ReportSection 
                     title={t('decisionsSectionTitle')}
@@ -795,13 +1186,82 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                 >
                     <div className="grid gap-3.5">
                         {result.decisions.map((item, index) => (
-                            <div key={index} className="flex items-start space-x-4.5 p-5 bg-sky-50/40 hover:bg-sky-50/70 border border-sky-100/60 rounded-2xl transition-all duration-200">
-                                <div className="bg-sky-100 text-sky-700 p-2.5 rounded-xl flex-shrink-0 mt-0.5">
-                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4" />
-                                    </svg>
+                            <div 
+                              key={index} 
+                              className={`relative group flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-3xl transition-all duration-300 border
+                                ${item.isImportant 
+                                  ? 'bg-amber-500/10 hover:bg-amber-500/15 border-amber-300/80 shadow-[0_4px_16px_rgba(245,158,11,0.06)]' 
+                                  : 'bg-white/45 backdrop-blur-md hover:bg-white/65 border-white/70 hover:border-white hover:shadow-md'}`}
+                            >
+                                <div className="flex items-start space-x-4 flex-grow">
+                                    <div className={`p-2.5 rounded-xl flex-shrink-0 mt-0.5 transition-all duration-300
+                                      ${item.isImportant ? 'bg-amber-500 text-white' : 'bg-sky-500 text-white'}`}>
+                                        {item.isImportant ? (
+                                          <svg className="w-4 h-4 fill-current text-white" viewBox="0 0 24 24">
+                                            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                                          </svg>
+                                        ) : (
+                                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4" />
+                                          </svg>
+                                        )}
+                                    </div>
+                                    <span className={`text-slate-800 text-sm leading-relaxed transition-all duration-300
+                                      ${item.isBold ? 'font-black' : 'font-semibold'}
+                                      ${item.isImportant ? 'text-amber-950 px-1 py-0.5 rounded-lg' : ''}
+                                    `}>
+                                      {item.decision}
+                                    </span>
                                 </div>
-                                <span className="text-slate-800 text-sm font-semibold leading-relaxed">{item.decision}</span>
+
+                                <div className="flex items-center space-x-1.5 ml-2 mt-2 sm:mt-0 self-end sm:self-auto shrink-0 transition-all duration-300">
+                                    <button
+                                        onClick={() => handleCopyDecision(item.decision, index)}
+                                        className="p-1.5 px-3 text-[10px] font-bold text-slate-500 hover:text-slate-850 bg-white hover:bg-slate-50 rounded-xl border border-slate-200/50 shadow-sm transition-all flex items-center gap-1 cursor-pointer"
+                                        title={language === 'vi' ? 'Sao chép quyết định này' : 'Copy this decision'}
+                                    >
+                                        {copiedDecisionIndex === index ? (
+                                            <>
+                                                <svg className="w-3.5 h-3.5 text-emerald-500 stroke-current flex-shrink-0" viewBox="0 0 24 24" fill="none" strokeWidth="3">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                                </svg>
+                                                <span>{language === 'vi' ? 'Đã chép' : 'Copied'}</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <svg className="w-3.5 h-3.5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                                </svg>
+                                                <span>{language === 'vi' ? 'Chép' : 'Copy'}</span>
+                                            </>
+                                        )}
+                                    </button>
+
+                                    <button
+                                        onClick={() => toggleDecisionBold(index)}
+                                        className={`w-7 h-7 rounded-xl border shadow-sm transition-all cursor-pointer flex items-center justify-center text-xs
+                                          ${item.isBold 
+                                            ? 'bg-slate-850 hover:bg-black border-slate-700 text-white font-extrabold' 
+                                            : 'bg-white hover:bg-slate-50 border-slate-200/50 text-slate-500 hover:text-slate-800'}`}
+                                        title={language === 'vi' ? 'Bôi đậm chữ quyết định này' : 'Bold text'}
+                                    >
+                                        <span>B</span>
+                                    </button>
+
+                                    <button
+                                        onClick={() => toggleDecisionImportant(index)}
+                                        className={`w-7 h-7 rounded-xl border shadow-sm transition-all cursor-pointer flex items-center justify-center
+                                          ${item.isImportant 
+                                            ? 'bg-amber-400 border-amber-500 text-slate-900 font-bold' 
+                                            : 'bg-white hover:bg-amber-50 border-slate-200/50 text-slate-400 hover:text-amber-500'}`}
+                                        title={language === 'vi' ? 'Đánh dấu quan trọng' : 'Bookmark as important'}
+                                    >
+                                        <svg className={`w-3.5 h-3.5 ${item.isImportant ? 'fill-current text-slate-950' : 'fill-none stroke-current'}`} viewBox="0 0 24 24" strokeWidth="2.5">
+                                            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                                        </svg>
+                                    </button>
+                                </div>
                             </div>
                         ))}
                     </div>
@@ -820,6 +1280,7 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                 </svg>
             ),
             hasData: result.actionItems.length > 0,
+            badgeCount: result.actionItems.length,
             content: (
                 <ReportSection 
                     title={t('actionItemsSectionTitle')}
@@ -832,30 +1293,137 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                         </svg>
                     }
                 >
+                    {/* Google Tasks Sync Header Banner */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 p-3.5 sm:p-4 bg-gradient-to-r from-sky-50/90 via-indigo-50/60 to-white rounded-2xl border border-sky-100/90 shadow-sm">
+                        <div className="flex items-center space-x-3">
+                            <div className="w-9 h-9 rounded-xl bg-white text-sky-600 flex items-center justify-center shadow-sm border border-sky-100 shrink-0">
+                                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none">
+                                    <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" fill="#4285F4"/>
+                                    <path d="M9.5 12.5L11 14L15.5 9.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <h4 className="text-xs sm:text-sm font-black text-slate-800 flex items-center gap-1.5">
+                                    <span>{language === 'vi' ? 'Đồng bộ Google Tasks' : 'Google Tasks Integration'}</span>
+                                    <span className="text-[10px] font-bold text-sky-700 bg-sky-100 px-2 py-0.5 rounded-full">Trực tiếp</span>
+                                </h4>
+                                <p className="text-[11px] sm:text-xs text-slate-500 font-medium mt-0.5">
+                                    {language === 'vi' ? 'Tạo danh sách việc cần làm To-do trên Google Tasks từ thông tin cuộc họp' : 'Create tasks in Google Tasks automatically from action items'}
+                                </p>
+                            </div>
+                        </div>
+
+                        <button
+                            onClick={handleSyncAllTasksToGoogleTasks}
+                            disabled={isSyncingAllTasks || result.actionItems.length === 0}
+                            className="inline-flex items-center justify-center space-x-2 px-4 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 active:scale-95 text-white font-bold text-xs transition-all shadow-md shadow-sky-500/20 disabled:opacity-50 cursor-pointer shrink-0"
+                        >
+                            {isSyncingAllTasks ? (
+                                <>
+                                    <svg className="animate-spin w-4 h-4 text-white" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                                    </svg>
+                                    <span>{language === 'vi' ? 'Đang đồng bộ...' : 'Syncing...'}</span>
+                                </>
+                            ) : (
+                                <>
+                                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none">
+                                        <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" fill="#4285F4"/>
+                                        <path d="M9.5 12.5L11 14L15.5 9.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                    </svg>
+                                    <span>{language === 'vi' ? 'Đồng bộ tất cả vào Google Tasks' : 'Sync All to Google Tasks'}</span>
+                                </>
+                            )}
+                        </button>
+                    </div>
+
+                    {tasksToast && (
+                        <div className={`p-3.5 mb-4 rounded-xl text-xs font-bold flex items-center justify-between border shadow-sm ${
+                            tasksToast.type === 'success' 
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                                : 'bg-rose-50 text-rose-800 border-rose-200'
+                        }`}>
+                            <span>{tasksToast.message}</span>
+                            <button onClick={() => setTasksToast(null)} className="text-slate-400 hover:text-slate-600 font-extrabold ml-2 cursor-pointer">✕</button>
+                        </div>
+                    )}
+
                     <div className="overflow-hidden border border-slate-200/50 rounded-2xl custom-shadow bg-white text-slate-800">
                         <div className="overflow-x-auto">
                             <table className="w-full text-left border-collapse font-sans text-sm">
                                 <thead>
-                                    <tr className="bg-slate-50 border-b border-slate-200/60">
-                                        <th className="p-4.5 font-extrabold text-slate-800 font-display">{t('actionItemsTableHeaderTask')}</th>
-                                        <th className="p-4.5 font-extrabold text-slate-800 font-display">{t('actionItemsTableHeaderOwner')}</th>
-                                        <th className="p-4.5 font-extrabold text-slate-800 font-display">{t('actionItemsTableHeaderCollaborators')}</th>
-                                        <th className="p-4.5 font-extrabold text-slate-800 font-display">{t('actionItemsTableHeaderDeadline')}</th>
-                                        <th className="p-4.5 font-extrabold text-slate-800 font-display">{t('actionItemsTableHeaderNotes')}</th>
+                                    <tr className="bg-slate-50 border-b border-slate-200/50">
+                                        <th className="p-4 font-bold text-slate-500 uppercase tracking-wider text-[11px]">{t('actionItemsTableHeaderTask')}</th>
+                                        <th className="p-4 font-bold text-slate-500 uppercase tracking-wider text-[11px] whitespace-nowrap">{t('actionItemsTableHeaderPriority')}</th>
+                                        <th className="p-4 font-bold text-slate-500 uppercase tracking-wider text-[11px] whitespace-nowrap">{t('actionItemsTableHeaderOwner')}</th>
+                                        <th className="p-4 font-bold text-slate-500 uppercase tracking-wider text-[11px] whitespace-nowrap">{t('actionItemsTableHeaderCollaborators')}</th>
+                                        <th className="p-4 font-bold text-slate-500 uppercase tracking-wider text-[11px] whitespace-nowrap">{t('actionItemsTableHeaderDeadline')}</th>
+                                        <th className="p-4 font-bold text-slate-500 uppercase tracking-wider text-[11px]">{t('actionItemsTableHeaderNotes')}</th>
+                                        <th className="p-4 font-bold text-slate-500 uppercase tracking-wider text-[11px] text-right whitespace-nowrap">Google Tasks</th>
                                     </tr>
                                 </thead>
                                 <tbody className="bg-white divide-y divide-slate-100">
-                                    {result.actionItems.map((item, index) => (
-                                        <tr key={index} className="hover:bg-slate-50/50 transition-colors duration-200">
-                                            <td className="p-4.5 font-semibold text-slate-800 align-top max-w-xs">{item.task}</td>
-                                            <td className="p-4.5 align-top">
-                                                <span className="inline-flex text-xs font-bold font-display bg-sky-50 text-sky-700 px-2.5 py-1 rounded-lg border border-sky-100/30">{item.owner}</span>
-                                            </td>
-                                            <td className="p-4.5 text-slate-500 font-medium align-top">{item.collaborators || '-'}</td>
-                                            <td className="p-4.5 font-mono text-xs text-slate-600 font-semibold align-top whitespace-nowrap">{item.deadline || '-'}</td>
-                                            <td className="p-4.5 text-slate-500 align-top text-xs leading-relaxed max-w-xs">{item.notes || '-'}</td>
-                                        </tr>
-                                    ))}
+                                    {result.actionItems.map((item, index) => {
+                                        const getPriorityBadge = (p: string | null) => {
+                                            if (!p || p === '-' || p.trim() === '') {
+                                                return <span className="inline-flex text-xs font-semibold text-slate-400 px-2">─</span>;
+                                            }
+                                            const lowerP = p.toLowerCase().trim();
+                                            if (lowerP === 'cao' || lowerP === 'high') {
+                                                return <span className="inline-flex items-center gap-1.5 text-xs font-bold font-sans bg-rose-50 text-rose-700 px-2.5 py-1 rounded-full border border-rose-100"><span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>{p}</span>;
+                                            }
+                                            if (lowerP === 'trung bình' || lowerP === 'trung binh' || lowerP === 'medium') {
+                                                return <span className="inline-flex items-center gap-1.5 text-xs font-bold font-sans bg-amber-50 text-amber-700 px-2.5 py-1 rounded-full border border-amber-100"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>{p}</span>;
+                                            }
+                                            return <span className="inline-flex items-center gap-1.5 text-xs font-bold font-sans bg-teal-50 text-teal-700 px-2.5 py-1 rounded-full border border-teal-100"><span className="w-1.5 h-1.5 rounded-full bg-teal-500"></span>{p}</span>;
+                                        };
+                                        const isItemSynced = syncedTaskIndexes.has(index);
+                                        return (
+                                            <tr key={index} className="hover:bg-slate-50/50 transition-colors duration-200">
+                                                <td className="p-4 text-slate-800 font-semibold align-top max-w-xs text-sm leading-relaxed">{item.task}</td>
+                                                <td className="p-4 align-top whitespace-nowrap">
+                                                    {getPriorityBadge(item.priority)}
+                                                </td>
+                                                <td className="p-4 align-top whitespace-nowrap">
+                                                    <span className="inline-flex items-center text-xs font-bold font-sans bg-sky-50 text-sky-700 px-2.5 py-1 rounded-full border border-sky-100/50">{item.owner}</span>
+                                                </td>
+                                                <td className="p-4 text-slate-500 font-medium align-top text-sm">{item.collaborators || '─'}</td>
+                                                <td className="p-4 font-mono text-xs text-slate-600 font-semibold align-top whitespace-nowrap">{item.deadline || '─'}</td>
+                                                <td className="p-4 text-slate-500 align-top text-xs leading-relaxed max-w-xs">{item.notes || '─'}</td>
+                                                <td className="p-4 align-top text-right whitespace-nowrap">
+                                                    {isItemSynced ? (
+                                                        <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200/80">
+                                                            <svg className="w-3.5 h-3.5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                                            </svg>
+                                                            <span>{language === 'vi' ? 'Đã thêm' : 'Added'}</span>
+                                                        </span>
+                                                    ) : (
+                                                        <button
+                                                            onClick={() => handleSyncSingleTaskToGoogleTasks(item, index)}
+                                                            disabled={syncingSingleIndex === index}
+                                                            className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200/80 font-bold text-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                                                            title={language === 'vi' ? 'Thêm công việc này vào Google Tasks' : 'Add this task to Google Tasks'}
+                                                        >
+                                                            {syncingSingleIndex === index ? (
+                                                                <svg className="animate-spin w-3.5 h-3.5 text-sky-600" fill="none" viewBox="0 0 24 24">
+                                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                                                                </svg>
+                                                            ) : (
+                                                                <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none">
+                                                                    <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" fill="#4285F4"/>
+                                                                    <path d="M9.5 12.5L11 14L15.5 9.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                                                </svg>
+                                                            )}
+                                                            <span>{language === 'vi' ? '+ Tasks' : '+ Tasks'}</span>
+                                                        </button>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
                                 </tbody>
                             </table>
                         </div>
@@ -873,6 +1441,7 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                 </svg>
             ),
             hasData: result.pendingIssues.length > 0,
+            badgeCount: result.pendingIssues.length,
             content: (
                  <ReportSection 
                     title={t('pendingIssuesSectionTitle')}
@@ -907,6 +1476,7 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                 </svg>
             ),
             hasData: result.notesAndReferences.length > 0,
+            badgeCount: result.notesAndReferences.length,
             content: (
                 <ReportSection 
                     title={t('notesSectionTitle')}
@@ -929,20 +1499,6 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                         ))}
                     </div>
                 </ReportSection>
-            )
-        },
-        {
-            id: 'slackEmail',
-            label: language === 'vi' ? 'Sao chép nhanh (Slack/Email) 📲' : 'Quick Copy (Slack/Email) 📲',
-            icon: (
-                <svg className="w-4 h-4 mr-1 pb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                </svg>
-            ),
-            hasData: true,
-            content: (
-                <SlackEmailExporter result={result} language={language} />
             )
         }
     ], [result, t, language, isEditingOverview, editedTopic, editedDateTime, editedLocation, editedAttendees]);
@@ -969,27 +1525,27 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                 </div>
             </div>
             
-            {/* Matte frosted glass navigation pill row */}
-            <div className="bg-white/45 backdrop-blur-xl border border-white/75 p-2 rounded-[28px] mb-8 flex items-center justify-between gap-4 shadow-[inset_0_2px_4px_rgba(255,255,255,0.75),_0_12px_28px_rgba(31,38,135,0.02)]">
-                <nav className="flex space-x-1.5 overflow-x-auto no-scrollbar flex-grow py-1 px-1.5" aria-label="Tabs">
-                    {tabs.filter(t => t.hasData).map(tab => (
-                        <button
-                            key={tab.id}
-                            onClick={() => setActiveTab(tab.id)}
-                            className={`whitespace-nowrap flex items-center space-x-2 py-2.5 px-5 rounded-full font-black text-xs transition-all duration-300 cursor-pointer active:scale-95 ${getTabTheme(tab.id, activeTab === tab.id)}`}
-                        >
-                            {tab.icon}
-                            <span>{tab.label}</span>
-                        </button>
-                    ))}
-                </nav>
-                <div className="flex-shrink-0 pr-2">
-                    <HelpTooltip content={t('tooltipReportTabs')} position="bottom-left" />
-                </div>
-            </div>
+            {/* Liquid Glass Navigation Bar */}
+            <LiquidGlassTabsBar 
+                tabs={tabs} 
+                activeTab={activeTab} 
+                setActiveTab={setActiveTab} 
+                tooltipText={t('tooltipReportTabs')} 
+            />
 
-            <div className="mt-8 transition-opacity duration-300">
-                {tabs.find(tab => tab.id === activeTab)?.content}
+            {/* Tab Content with Fluid Glass Fade & Motion */}
+            <div className="mt-8">
+                <AnimatePresence mode="wait">
+                    <motion.div
+                        key={activeTab}
+                        initial={{ opacity: 0, y: 12, scale: 0.995 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -12, scale: 0.995 }}
+                        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                    >
+                        {tabs.find(tab => tab.id === activeTab)?.content}
+                    </motion.div>
+                </AnimatePresence>
             </div>
         </div>
     );
@@ -1172,15 +1728,18 @@ const TranscriptViewEditor: React.FC<Pick<AnalysisViewProps, 'transcript' | 'set
             <div 
               key={index} 
               ref={el => { segmentRefs.current[index] = el; }}
-              className={`relative p-5 pr-12 rounded-3xl border transition-all duration-300 flex flex-col md:flex-row md:items-start gap-4 hover:shadow-md
+              className={`relative p-5 pr-28 rounded-3xl border transition-all duration-300 flex flex-col md:flex-row md:items-start gap-4 hover:shadow-md
                 ${isActive 
                   ? 'bg-sky-50/70 border-sky-200 shadow-md shadow-sky-500/5 md:translate-x-1.5' 
-                  : 'bg-white border-slate-200/50'}`}
+                  : segment.isImportant 
+                    ? 'bg-amber-50/40 border-amber-200 shadow-sm' 
+                    : 'bg-white border-slate-200/50'}
+                ${segment.isImportant ? 'border-l-4 border-l-amber-400' : ''}`}
             >
                 {/* Speaker badge / Left Col */}
                 <div className="flex items-center md:flex-col md:items-start gap-2 md:w-36 flex-shrink-0">
                   <div className={`p-2 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-300
-                    ${isActive ? 'bg-sky-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                    ${isActive ? 'bg-sky-500 text-white' : segment.isImportant ? 'bg-amber-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
                     <TagIcon className="w-4 h-4" />
                   </div>
                   <input
@@ -1196,7 +1755,9 @@ const TranscriptViewEditor: React.FC<Pick<AnalysisViewProps, 'transcript' | 'set
                     className={`text-[10px] font-mono font-bold flex items-center gap-1 p-1 px-2.5 rounded-lg border transition-all duration-200 ml-auto md:ml-0 md:mt-2 shadow-sm
                       ${isActive 
                         ? 'bg-sky-600 hover:bg-sky-700 text-white border-sky-500' 
-                        : 'bg-slate-50 hover:bg-sky-50 text-slate-500 hover:text-sky-600 border-slate-200/40 hover:border-sky-200'}`}
+                        : segment.isImportant 
+                          ? 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200' 
+                          : 'bg-slate-50 hover:bg-sky-50 text-slate-500 hover:text-sky-600 border-slate-200/40 hover:border-sky-200'}`}
                     title={vi ? 'Nhấn để nghe lại đoạn này' : 'Click to replay this segment'}
                   >
                       {/* Play icon */}
@@ -1214,20 +1775,54 @@ const TranscriptViewEditor: React.FC<Pick<AnalysisViewProps, 'transcript' | 'set
                     onChange={(newText) => handleTranscriptChange(index, newText)}
                     index={index}
                     isActive={isActive}
+                    isBold={segment.isBold}
+                    isImportant={segment.isImportant}
                   />
                 </div>
 
-                {/* Top-Right Quick Play Button */}
-                <div className="absolute right-3.5 top-3.5">
+                {/* Top-Right Premium Tool Buttons: Bold, Important/Bookmark, Quick Play */}
+                <div className="absolute right-3.5 top-3.5 flex items-center space-x-1.5">
+                  <button
+                    onClick={() => {
+                      const newTranscript = [...transcript];
+                      newTranscript[index] = { ...newTranscript[index], isBold: !newTranscript[index].isBold };
+                      setTranscript(newTranscript);
+                    }}
+                    className={`w-7 h-7 rounded-lg border transition-all duration-200 shadow-sm flex items-center justify-center cursor-pointer text-xs
+                      ${segment.isBold 
+                        ? 'bg-slate-850 hover:bg-black border-slate-700 text-white font-extrabold' 
+                        : 'bg-slate-50 hover:bg-slate-100 border-slate-200/45 text-slate-500 hover:text-slate-800'}`}
+                    title={vi ? 'Bôi đậm chữ' : 'Bold text'}
+                  >
+                    <span>B</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      const newTranscript = [...transcript];
+                      newTranscript[index] = { ...newTranscript[index], isImportant: !newTranscript[index].isImportant };
+                      setTranscript(newTranscript);
+                    }}
+                    className={`w-7 h-7 rounded-lg border transition-all duration-200 shadow-sm flex items-center justify-center cursor-pointer
+                      ${segment.isImportant 
+                        ? 'bg-amber-400 hover:bg-amber-500 border-amber-400 text-slate-900' 
+                        : 'bg-slate-50 hover:bg-amber-50 border-slate-200/45 text-slate-400 hover:text-amber-500 hover:border-amber-200'}`}
+                    title={vi ? 'Đánh dấu quan trọng' : 'Bookmark as important'}
+                  >
+                    <svg className={`w-3.5 h-3.5 ${segment.isImportant ? 'fill-current text-slate-900' : 'fill-none stroke-current'}`} viewBox="0 0 24 24" strokeWidth="2.5">
+                      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                    </svg>
+                  </button>
+
                   <button
                     onClick={() => handleSegmentClick(segment.startTime)}
-                    className={`p-1.5 rounded-xl border transition-all duration-200 shadow-sm flex items-center justify-center
+                    className={`w-7 h-7 rounded-lg border transition-all duration-200 shadow-sm flex items-center justify-center cursor-pointer
                       ${isActive 
                         ? 'bg-sky-100 hover:bg-sky-200 border-sky-300 text-sky-700' 
                         : 'bg-slate-50 hover:bg-sky-50 border-slate-200/45 text-slate-400 hover:text-sky-600 hover:border-sky-200'}`}
                     title={vi ? 'Nhấn để phát đoạn âm thanh này' : 'Play this audio portion'}
                   >
-                    <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                    <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
                       <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" />
                     </svg>
                   </button>
@@ -1278,6 +1873,21 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
   const { t, language } = useTranslation();
   const [viewMode, setViewMode] = useState<'transcript' | 'report'>('transcript');
   const [isExporting, setIsExporting] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    if (isFullscreen) {
+      document.body.style.overflow = 'hidden';
+      document.body.classList.add('analysis-fullscreen');
+    } else {
+      document.body.style.overflow = '';
+      document.body.classList.remove('analysis-fullscreen');
+    }
+    return () => {
+      document.body.style.overflow = '';
+      document.body.classList.remove('analysis-fullscreen');
+    };
+  }, [isFullscreen]);
 
   const [googleUser, setGoogleUser] = useState<User | null>(null);
   const [isGmailLoading, setIsGmailLoading] = useState(false);
@@ -1287,6 +1897,17 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
   const [isDriveLoading, setIsDriveLoading] = useState(false);
   const [driveError, setDriveError] = useState<string | null>(null);
   const [driveFileUrl, setDriveFileUrl] = useState<string | null>(null);
+
+  // Export Modal & Template Selection State
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<DocumentTemplate>('standard');
+  const [selectedFormat, setSelectedFormat] = useState<ExportFormat>('docx');
+  const [includeTranscriptOption, setIncludeTranscriptOption] = useState<boolean>(true);
+
+  const openExportModal = (format: ExportFormat = 'docx') => {
+    setSelectedFormat(format);
+    setIsExportModalOpen(true);
+  };
 
   useEffect(() => {
     const unsubscribe = initAuth(
@@ -1318,6 +1939,94 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
     return cleaned || "analysis_export";
   }
 
+  const extractDate = (dateTimeStr: string): string => {
+    if (!dateTimeStr) {
+      const today = new Date();
+      return today.toISOString().split('T')[0];
+    }
+    const matchYYYYMMDD = dateTimeStr.match(/(\d{4})[-/.](\d{2})[-/.](\d{2})/);
+    if (matchYYYYMMDD) {
+      return `${matchYYYYMMDD[1]}-${matchYYYYMMDD[2]}-${matchYYYYMMDD[3]}`;
+    }
+    const matchDDMMYYYY = dateTimeStr.match(/(\d{2})[-/.](\d{2})[-/.](\d{4})/);
+    if (matchDDMMYYYY) {
+      return `${matchDDMMYYYY[3]}-${matchDDMMYYYY[2]}-${matchDDMMYYYY[1]}`;
+    }
+    try {
+      const parsed = Date.parse(dateTimeStr);
+      if (!isNaN(parsed)) {
+        const dateObj = new Date(parsed);
+        return dateObj.toISOString().split('T')[0];
+      }
+    } catch (e) {
+      // ignore
+    }
+    const today = new Date();
+    return today.toISOString().split('T')[0];
+  };
+
+  const removeVietnameseTones = (str: string): string => {
+    let resultStr = str;
+    resultStr = resultStr.replace(/à|á|ạ|ả|ã|â|ầ|ấ|ậ|ẩ|ẫ|ă|ằ|ắ|ặ|ẳ|ẵ/g, "a");
+    resultStr = resultStr.replace(/è|é|ẹ|ẻ|ẽ|ê|ề|ế|ệ|ể|ễ/g, "e");
+    resultStr = resultStr.replace(/ì|í|ị|ỉ|ĩ/g, "i");
+    resultStr = resultStr.replace(/ò|ó|ọ|ỏ|õ|ô|ồ|ố|ộ|ổ|ỗ|ơ|ờ|ớ|ợ|ở|ỡ/g, "o");
+    resultStr = resultStr.replace(/ù|ú|ụ|ủ|ũ|ư|ừ|ứ|ự|ử|ữ/g, "u");
+    resultStr = resultStr.replace(/ỳ|ý|ỵ|ỷ|ỹ/g, "y");
+    resultStr = resultStr.replace(/đ/g, "d");
+    resultStr = resultStr.replace(/À|Á|Ạ|Ả|Ã|Â|Ầ|Ấ|Ậ|Ẩ|Ẫ|Ă|Ằ|Ắ|Ặ|Ẳ|Ẵ/g, "A");
+    resultStr = resultStr.replace(/È|É|Ẹ|Ẻ|Ẽ|Ê|Ề|Ế|Ệ|Ể|Ễ/g, "E");
+    resultStr = resultStr.replace(/Ì|Í|Ị|Ỉ|Ĩ/g, "I");
+    resultStr = resultStr.replace(/Ò|Ó|Ọ|Ỏ|Õ|Ô|Ồ|Ố|Ộ|Ổ|Ỗ|Ơ|Ờ|Ớ|Ợ|Ở|Ỡ/g, "O");
+    resultStr = resultStr.replace(/Ù|Ú|Ụ|Ủ|Ũ|Ư|Ừ|Ứ|Ự|Ử|Ữ/g, "U");
+    resultStr = resultStr.replace(/Ỳ|Ý|Ỵ|Ỷ|Ỹ/g, "Y");
+    resultStr = resultStr.replace(/Đ/g, "D");
+    try {
+      resultStr = resultStr.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    } catch (e) {
+      // ignore normalisation issues if unsupported
+    }
+    return resultStr;
+  };
+
+  const getRecommendedFileName = (resVal: AnalysisResult, audioFileName?: string): string => {
+    const datePart = extractDate(resVal.overview?.dateTime);
+    let topicText = resVal.overview?.topic || '';
+    if (!topicText && audioFileName) {
+      topicText = audioFileName.replace(/\.[^/.]+$/, "");
+    }
+    if (!topicText) {
+      topicText = 'ChuDeHop';
+    }
+    topicText = removeVietnameseTones(topicText);
+    topicText = topicText.replace(/[\/\\:*?"<>|._\-–+=\(\)\[\]\{\};,!@#\$%\^&\*]/g, ' ').trim();
+    let cleanTopic = topicText
+      .split(/\s+/)
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join('');
+    if (!cleanTopic) cleanTopic = 'ChuDeHop';
+
+    let dept = resVal.category || 'Chung';
+    dept = removeVietnameseTones(dept);
+    const deptMap: Record<string, string> = {
+      'Project': 'DuAn',
+      'Marketing': 'Marketing',
+      'Technical': 'KyThuat',
+      'HR': 'NhanSu',
+      'Finance': 'TaiChinh',
+      'Operations': 'VanHanh',
+      'General': 'Chung',
+      'Chung': 'Chung'
+    };
+    if (deptMap[dept]) {
+      dept = deptMap[dept];
+    } else {
+      dept = dept.replace(/[^a-zA-Z0-9]/g, '');
+    }
+    if (!dept) dept = 'Chung';
+    return `${datePart}_${cleanTopic}_${dept}_v1.0`;
+  };
+
   const handleCreateGmailDraft = async () => {
     if (!result) return;
     setIsGmailLoading(true);
@@ -1338,7 +2047,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
         }
       }
 
-      const fileName = sanitizeFileName(result.overview.topic || audioFile?.name || 'analysis_export');
+      const fileName = getRecommendedFileName(result, audioFile?.name);
       const docBlob = await generateDocxBlob(result, transcript);
       
       try {
@@ -1387,7 +2096,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
         }
       }
 
-      const fileName = sanitizeFileName(result.overview.topic || audioFile?.name || 'analysis_export');
+      const fileName = getRecommendedFileName(result, audioFile?.name);
       const docBlob = await generateDocxBlob(result, transcript);
       
       let res;
@@ -1417,33 +2126,169 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
     }
   };
 
-  const handleExport = async (format: 'docx' | 'xlsx') => {
+  const handleExecuteExport = async () => {
     if (!result) return;
     setIsExporting(true);
-    const fileName = sanitizeFileName(result.overview.topic || audioFile?.name || 'analysis_export');
-
-    await new Promise(resolve => setTimeout(resolve, 50));
+    const fileName = getRecommendedFileName(result, audioFile?.name);
+    const tplSuffix = selectedTemplate === 'summary' 
+      ? '_ExecutiveBrief' 
+      : selectedTemplate === 'technical' 
+        ? '_TechnicalReport' 
+        : '_StandardMoM';
+    const finalFileName = `${fileName}${tplSuffix}`;
 
     try {
-        if (format === 'docx') {
-            await exportDocx(fileName, result, transcript);
-        } else {
-            await exportXlsx(fileName, result, transcript);
+      if (selectedFormat === 'docx') {
+        const blob = await generateDocxBlob(result, transcript, selectedTemplate, includeTranscriptOption);
+        saveAs(blob, `${finalFileName}.docx`);
+        setIsExportModalOpen(false);
+      } else if (selectedFormat === 'xlsx') {
+        await exportXlsx(finalFileName, result, transcript, selectedTemplate, includeTranscriptOption);
+        setIsExportModalOpen(false);
+      } else if (selectedFormat === 'gmail') {
+        setIsGmailLoading(true);
+        setGmailError(null);
+        setDraftCreated(false);
+        try {
+          let currentUser = googleUser;
+          const token = await getAccessToken();
+          if (!currentUser || !token) {
+            const signInResult = await googleSignIn();
+            if (signInResult) {
+              currentUser = signInResult.user;
+              setGoogleUser(currentUser);
+            } else {
+              setIsGmailLoading(false);
+              setIsExporting(false);
+              return;
+            }
+          }
+          const blob = await generateDocxBlob(result, transcript, selectedTemplate, includeTranscriptOption);
+          await createGmailDraft(result, language, blob, `${finalFileName}.docx`);
+          setDraftCreated(true);
+          setIsExportModalOpen(false);
+        } catch (innerErr: any) {
+          console.error("Gmail draft creation failed:", innerErr);
+          setGmailError(innerErr.message || (language === 'vi' ? "Không thể tạo email nháp trong Gmail." : "Failed to create draft email in Gmail."));
+        } finally {
+          setIsGmailLoading(false);
         }
+      } else if (selectedFormat === 'drive') {
+        setIsDriveLoading(true);
+        setDriveError(null);
+        setDriveFileUrl(null);
+        try {
+          let currentUser = googleUser;
+          const token = await getAccessToken();
+          if (!currentUser || !token) {
+            const signInResult = await googleSignIn();
+            if (signInResult) {
+              currentUser = signInResult.user;
+              setGoogleUser(currentUser);
+            } else {
+              setIsDriveLoading(false);
+              setIsExporting(false);
+              return;
+            }
+          }
+          const blob = await generateDocxBlob(result, transcript, selectedTemplate, includeTranscriptOption);
+          const res = await uploadDocxToGoogleDrive(blob, `${finalFileName}.docx`, language);
+          setDriveFileUrl(res.webViewLink);
+          setIsExportModalOpen(false);
+        } catch (innerErr: any) {
+          console.error("Google Drive upload failed:", innerErr);
+          setDriveError(innerErr.message || (language === 'vi' ? "Không thể tải tệp lên Google Drive." : "Failed to upload document to Google Drive."));
+        } finally {
+          setIsDriveLoading(false);
+        }
+      }
     } catch (error) {
-        console.error(`Failed to export as ${format}:`, error);
-        alert(t('exportError', {format}));
+      console.error(`Failed to export as ${selectedFormat}:`, error);
+      alert(t('exportError', { format: selectedFormat }));
     } finally {
-        setIsExporting(false);
+      setIsExporting(false);
     }
   };
 
-    const generateDocxBlob = async (result: AnalysisResult, transcript: TranscriptSegment[]): Promise<Blob> => {
-        const docTitle = (language === 'vi' ? 'BIÊN BẢN CUỘC HỌP PHÁT HÀNH' : 'OFFICIAL MEETING MINUTES');
+  const handleExport = async (format: 'docx' | 'xlsx') => {
+    openExportModal(format);
+  };
+
+    const generateDocxBlob = async (
+      result: AnalysisResult, 
+      transcript: TranscriptSegment[],
+      template: DocumentTemplate = 'standard',
+      includeTranscript: boolean = true
+    ): Promise<Blob> => {
+        let docTitle = (language === 'vi' ? 'BIÊN BẢN CUỘC HỌP PHÁT HÀNH' : 'OFFICIAL MEETING MINUTES');
+        if (template === 'summary') {
+          docTitle = (language === 'vi' ? 'BẢN TÓM TẮT CUỘC HỌP (EXECUTIVE BRIEF)' : 'EXECUTIVE MEETING BRIEF');
+        } else if (template === 'technical') {
+          docTitle = (language === 'vi' ? 'BÁO CÁO CHI TIẾT KỸ THUẬT VÀ DỰ ÁN' : 'TECHNICAL & ENGINEERING REPORT');
+        }
+
         const docCreator = (language === 'vi' ? 'Trợ lý Họp AI' : 'AI Meeting Assistant');
         const docDesc = (language === 'vi' ? `Biên bản được tạo tự động cho cuộc họp ngày ${result.overview.dateTime}` : `Automatically generated minutes for the meeting on ${result.overview.dateTime}`);
         const docTopic = (language === 'vi' ? `Biên bản họp - ${result.overview.topic}` : `Meeting Minutes - ${result.overview.topic}`);
         
+        // Inline Markdown to docx TextRun helper (strips **bold** and *italic* tags into real docx styles)
+        const parseInlineMarkdownToTextRuns = (
+            text: string, 
+            options: { baseSize?: number; baseColor?: string; font?: string; italic?: boolean } = {}
+        ): TextRun[] => {
+            const size = options.baseSize ?? 20; // 10pt default
+            const color = options.baseColor ?? "334155";
+            const font = options.font ?? "Inter";
+            const baseItalic = options.italic ?? false;
+
+            if (!text) return [new TextRun({ text: '', size, color, font })];
+
+            const runs: TextRun[] = [];
+            const boldRegex = /(\*\*[^*]+\*\*)/g;
+            const parts = text.split(boldRegex);
+
+            for (const part of parts) {
+                if (!part) continue;
+                if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
+                    const innerText = part.slice(2, -2);
+                    runs.push(new TextRun({
+                        text: innerText,
+                        bold: true,
+                        italic: baseItalic,
+                        size,
+                        color,
+                        font
+                    }));
+                } else {
+                    const italicRegex = /(\*[^*]+\*)/g;
+                    const subParts = part.split(italicRegex);
+                    for (const sub of subParts) {
+                        if (!sub) continue;
+                        if (sub.startsWith('*') && sub.endsWith('*') && sub.length >= 2) {
+                            runs.push(new TextRun({
+                                text: sub.slice(1, -1),
+                                bold: false,
+                                italic: true,
+                                size,
+                                color,
+                                font
+                            }));
+                        } else {
+                            runs.push(new TextRun({
+                                text: sub,
+                                bold: false,
+                                italic: baseItalic,
+                                size,
+                                color,
+                                font
+                            }));
+                        }
+                    }
+                }
+            }
+            return runs.length > 0 ? runs : [new TextRun({ text: text || '', size, color, font })];
+        };
+
         const createTitle = (text: string) => new Paragraph({
             alignment: AlignmentType.CENTER,
             spacing: { before: 240, after: 480 },
@@ -1451,56 +2296,55 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                 new TextRun({
                     text: text.toUpperCase(),
                     bold: true,
-                    size: 38, // 19pt
+                    size: 36, // 18pt
                     color: "0F172A",
-                    font: "Segoe UI"
+                    font: "Inter"
                 })
             ]
         });
 
         const createHeading1 = (text: string, options?: { pageBreakBefore?: boolean }) => new Paragraph({
-            spacing: { before: 400, after: 180 },
+            spacing: { before: 360, after: 160 },
             keepWithNext: true,
             pageBreakBefore: options?.pageBreakBefore,
-            children: [
-                new TextRun({
-                    text: text,
-                    bold: true,
-                    size: 26, // 13pt
-                    color: "0F172A",
-                    font: "Segoe UI"
-                })
-            ]
+            children: parseInlineMarkdownToTextRuns(text, {
+                baseSize: 26, // 13pt
+                baseColor: "0F172A", // Slate 900
+                font: "Inter"
+            })
         });
 
         const createHeading2 = (text: string) => new Paragraph({
-            spacing: { before: 240, after: 120 },
+            spacing: { before: 260, after: 120 },
             keepWithNext: true,
-            children: [
-                new TextRun({
-                    text: text,
-                    bold: true,
-                    size: 22, // 11pt
-                    color: "0284C7", // Sky blue primary
-                    font: "Segoe UI"
-                })
-            ]
+            children: parseInlineMarkdownToTextRuns(text, {
+                baseSize: 22, // 11pt
+                baseColor: "0284C7", // Sky Blue Primary
+                font: "Inter"
+            })
+        });
+
+        const createHeading3 = (text: string) => new Paragraph({
+            spacing: { before: 200, after: 100 },
+            keepWithNext: true,
+            children: parseInlineMarkdownToTextRuns(text, {
+                baseSize: 20, // 10pt
+                baseColor: "0369A1",
+                font: "Inter"
+            })
         });
 
         const createBody = (text: string, options?: { indent?: number, italic?: boolean, bullet?: boolean }) => {
             return new Paragraph({
-                spacing: { before: 100, after: 100, line: 265 },
+                spacing: { before: 80, after: 80, line: 250 },
                 bullet: options?.bullet ? { level: 0 } : undefined,
                 indent: options?.indent ? { left: options.indent } : undefined,
-                children: [
-                    new TextRun({
-                        text: text,
-                        size: 20, // 10pt
-                        color: "334155", // Slate 700
-                        font: "Segoe UI",
-                        italic: options?.italic
-                    })
-                ]
+                children: parseInlineMarkdownToTextRuns(text, {
+                    baseSize: 20, // 10pt
+                    baseColor: "334155", // Slate 700
+                    font: "Inter",
+                    italic: options?.italic
+                })
             });
         };
 
@@ -1512,23 +2356,192 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                         text: `• ${label}: `,
                         bold: true,
                         size: 20,
-                        color: "1E293B", // Slate 800
-                        font: "Segoe UI"
+                        color: "1E293B",
+                        font: "Inter"
                     }),
-                    new TextRun({
-                        text: value,
-                        size: 20,
-                        color: "475569", // Slate 600
-                        font: "Segoe UI"
+                    ...parseInlineMarkdownToTextRuns(value, {
+                        baseSize: 20,
+                        baseColor: "475569",
+                        font: "Inter"
                     })
                 ]
             });
         };
 
+        const createDocxTableFromMarkdownRows = (headerCells: string[], bodyRows: string[][]): Table => {
+            const colCount = Math.max(headerCells.length, ...bodyRows.map(r => r.length));
+            if (colCount === 0) return new Table({ rows: [] });
+
+            const totalWidthDxa = 9360; // 6.5 in
+            const colWidthDxa = Math.floor(totalWidthDxa / colCount);
+            const columnWidths = Array(colCount).fill(colWidthDxa);
+
+            const headerRow = new TableRow({
+                tableHeader: true,
+                cantSplit: true,
+                children: Array.from({ length: colCount }).map((_, i) => {
+                    const cellText = headerCells[i] || '';
+                    return new TableCell({
+                        width: { size: colWidthDxa, type: WidthType.DXA },
+                        shading: { fill: "0F172A" },
+                        margins: { top: 120, bottom: 120, left: 140, right: 140 },
+                        children: [
+                            new Paragraph({
+                                alignment: AlignmentType.LEFT,
+                                children: parseInlineMarkdownToTextRuns(cellText, {
+                                    baseSize: 18,
+                                    baseColor: "FFFFFF",
+                                    font: "Inter"
+                                })
+                            })
+                        ]
+                    });
+                })
+            });
+
+            const dataRows = bodyRows.map((row, rowIndex) => {
+                const bgFill = rowIndex % 2 === 0 ? "FFFFFF" : "F8FAFC";
+                return new TableRow({
+                    cantSplit: true,
+                    children: Array.from({ length: colCount }).map((_, i) => {
+                        const cellText = row[i] || '';
+                        return new TableCell({
+                            width: { size: colWidthDxa, type: WidthType.DXA },
+                            shading: { fill: bgFill },
+                            margins: { top: 100, bottom: 100, left: 140, right: 140 },
+                            children: [
+                                new Paragraph({
+                                    spacing: { before: 40, after: 40, line: 220 },
+                                    children: parseInlineMarkdownToTextRuns(cellText, {
+                                        baseSize: 18,
+                                        baseColor: "334155",
+                                        font: "Inter"
+                                    })
+                                })
+                            ]
+                        });
+                    })
+                });
+            });
+
+            return new Table({
+                width: { size: totalWidthDxa, type: WidthType.DXA },
+                columnWidths,
+                borders: {
+                    top: { style: BorderStyle.SINGLE, size: 6, color: "CBD5E1" },
+                    bottom: { style: BorderStyle.SINGLE, size: 6, color: "CBD5E1" },
+                    left: { style: BorderStyle.SINGLE, size: 6, color: "CBD5E1" },
+                    right: { style: BorderStyle.SINGLE, size: 6, color: "CBD5E1" },
+                    insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+                    insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" }
+                },
+                rows: [headerRow, ...dataRows]
+            });
+        };
+
+        const parseMarkdownToDocxElements = (markdownText: string): (Paragraph | Table)[] => {
+            const elements: (Paragraph | Table)[] = [];
+            const lines = markdownText.split('\n');
+
+            let inTable = false;
+            let tableHeaderCells: string[] = [];
+            let tableBodyRows: string[][] = [];
+
+            const flushTable = () => {
+                if (inTable && tableHeaderCells.length > 0) {
+                    elements.push(createDocxTableFromMarkdownRows(tableHeaderCells, tableBodyRows));
+                    elements.push(new Paragraph({ spacing: { after: 120 } }));
+                }
+                inTable = false;
+                tableHeaderCells = [];
+                tableBodyRows = [];
+            };
+
+            for (let i = 0; i < lines.length; i++) {
+                const rawLine = lines[i];
+                const trimmed = rawLine.trim();
+
+                if (!trimmed) {
+                    if (inTable) flushTable();
+                    continue;
+                }
+
+                // Check if line is a markdown table row (contains '|')
+                if (trimmed.includes('|') && (trimmed.startsWith('|') || trimmed.endsWith('|') || trimmed.split('|').length > 2)) {
+                    const rawCells = trimmed.split('|');
+                    let cells = rawCells.map(c => c.trim());
+                    if (trimmed.startsWith('|')) cells.shift();
+                    if (trimmed.endsWith('|')) cells.pop();
+
+                    const isDelimiter = cells.every(c => /^[:\-\s]+$/.test(c));
+                    if (isDelimiter) {
+                        inTable = true;
+                        continue;
+                    }
+
+                    if (!inTable) {
+                        inTable = true;
+                        tableHeaderCells = cells;
+                        tableBodyRows = [];
+                    } else {
+                        tableBodyRows.push(cells);
+                    }
+                    continue;
+                } else {
+                    if (inTable) {
+                        flushTable();
+                    }
+                }
+
+                // Headings
+                if (trimmed.startsWith('# ')) {
+                    elements.push(createHeading1(trimmed.replace(/^#+\s*/, '')));
+                } else if (trimmed.startsWith('## ')) {
+                    elements.push(createHeading1(trimmed.replace(/^#+\s*/, '')));
+                } else if (trimmed.startsWith('### ')) {
+                    elements.push(createHeading2(trimmed.replace(/^#+\s*/, '')));
+                } else if (trimmed.startsWith('#### ')) {
+                    elements.push(createHeading3(trimmed.replace(/^#+\s*/, '')));
+                } else if (/^\d+\.\s+[A-Z0-9À-Ỹ]/.test(trimmed) && trimmed.length < 80 && !trimmed.includes(':')) {
+                    elements.push(createHeading2(trimmed));
+                } else if (trimmed.startsWith('* ') || trimmed.startsWith('- ') || trimmed.startsWith('• ') || trimmed.startsWith('● ')) {
+                    const cleanBulletText = trimmed.replace(/^[*•●-]\s*/, '');
+                    elements.push(createBody(cleanBulletText, { bullet: true }));
+                } else {
+                    elements.push(createBody(trimmed));
+                }
+            }
+
+            if (inTable) {
+                flushTable();
+            }
+
+            return elements;
+        };
+
         const docChildren: any[] = [];
         docChildren.push(createTitle(docTitle));
 
-        docChildren.push(createHeading1(t('tabOverview')));
+        if (template === 'technical') {
+            docChildren.push(new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { before: -200, after: 300 },
+                children: [
+                    new TextRun({
+                        text: language === 'vi' ? '[ BÁO CÁO CHUYÊN MÔN KỸ THUẬT, KIẾN TRÚC & TIẾN ĐỘ ]' : '[ TECHNICAL SPECIFICATION & ENGINEERING REPORT ]',
+                        bold: true,
+                        size: 18,
+                        color: "4F46E5",
+                        font: "Inter"
+                    })
+                ]
+            }));
+        }
+
+        const overviewHeading = template === 'technical' 
+          ? (language === 'vi' ? '1. THÔNG TIN KỸ THUẬT & BỐI CẢNH DỰ ÁN' : '1. TECHNICAL OVERVIEW & PROJECT CONTEXT')
+          : t('tabOverview');
+        docChildren.push(createHeading1(overviewHeading));
         docChildren.push(createHeading2(t('overviewInfoTitle')));
         docChildren.push(createDetailRow(t('topic'), result.overview.topic));
         docChildren.push(createDetailRow(t('dateTime'), result.overview.dateTime));
@@ -1536,77 +2549,77 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
         docChildren.push(createDetailRow(t('attendees'), result.overview.attendees.join(', ')));
 
         if (result.mainObjectives?.length > 0) {
-            docChildren.push(createHeading2(t('mainObjectivesTitle')));
+            const objTitle = template === 'technical' 
+              ? (language === 'vi' ? 'Mục tiêu Kỹ thuật & Chuyên môn' : 'Technical & Engineering Objectives')
+              : t('mainObjectivesTitle');
+            docChildren.push(createHeading2(objTitle));
             result.mainObjectives.forEach(o => docChildren.push(createBody(o, { bullet: true })));
         }
 
         if (result.discussionSummary) {
-            docChildren.push(createHeading1(t('summarySectionTitle')));
-            result.discussionSummary.split('\n').filter(line => line.trim()).forEach(line => {
-                const cleanedLine = line.trim();
-                if (cleanedLine.startsWith('## ')) {
-                    docChildren.push(createHeading2(cleanedLine.substring(3)));
-                } else if (cleanedLine.startsWith('* ')) {
-                    docChildren.push(createBody(cleanedLine.substring(2), { bullet: true }));
-                } else if (cleanedLine.startsWith('- ')) {
-                    docChildren.push(createBody(cleanedLine.substring(2), { bullet: true }));
-                } else {
-                    docChildren.push(createBody(cleanedLine));
-                }
-            });
+            const summaryTitle = template === 'summary' 
+              ? (language === 'vi' ? '2. Tóm tắt Nội dung Thảo luận Chính' : '2. Executive Discussion Highlights')
+              : template === 'technical'
+                ? (language === 'vi' ? '2. Chi tiết Thảo luận Kỹ thuật & Triển khai' : '2. Technical Discussion Breakdown')
+                : t('summarySectionTitle');
+            docChildren.push(createHeading1(summaryTitle));
+            const summaryElements = parseMarkdownToDocxElements(result.discussionSummary);
+            docChildren.push(...summaryElements);
         }
 
-        if (result.decisions?.length > 0) {
-            docChildren.push(createHeading1(t('decisionsSectionTitle')));
+        const summaryHasDecisions = /Quyết định|Decisions/i.test(result.discussionSummary || '');
+        if (result.decisions?.length > 0 && !summaryHasDecisions) {
+            const decTitle = template === 'technical'
+              ? (language === 'vi' ? '3. Quyết định Kỹ thuật & Công nghệ' : '3. Engineering & Technical Decisions')
+              : t('decisionsSectionTitle');
+            docChildren.push(createHeading1(decTitle));
             result.decisions.forEach(d => docChildren.push(createBody(d.decision, { bullet: true })));
         }
 
-        if (result.actionItems?.length > 0) {
-            docChildren.push(createHeading1(t('actionItemsSectionTitle')));
+        const summaryHasActionItemsTable = /Mã việc|Công việc cần thực hiện|Action Item|Phân công Công việc/i.test(result.discussionSummary || '');
+        if (result.actionItems?.length > 0 && !summaryHasActionItemsTable) {
+            const actionTitle = template === 'technical'
+              ? (language === 'vi' ? '4. Bảng Phân công Nhiệm vụ Kỹ thuật' : '4. Engineering Action Items Assignment')
+              : t('actionItemsSectionTitle');
+            docChildren.push(createHeading1(actionTitle));
             
+            const headerBg = template === 'technical' ? "1E1B4B" : "0F172A";
+
             const tableHeaderCell = (text: string, widthDxa: number) => new TableCell({
                 width: { size: widthDxa, type: WidthType.DXA },
-                shading: { fill: "0F172A" }, // High contrast dark slate header
+                shading: { fill: headerBg },
                 margins: { top: 120, bottom: 120, left: 140, right: 140 },
                 children: [
                     new Paragraph({
                         alignment: AlignmentType.LEFT,
-                        children: [
-                            new TextRun({
-                                text: text,
-                                bold: true,
-                                size: 19, // 9.5pt
-                                color: "FFFFFF",
-                                font: "Segoe UI"
-                            })
-                        ]
+                        children: parseInlineMarkdownToTextRuns(text, {
+                            baseSize: 18,
+                            baseColor: "FFFFFF",
+                            font: "Inter"
+                        })
                     })
                 ]
             });
 
             const tableBodyCell = (text: string, widthDxa: number, boldText = false) => new TableCell({
                 width: { size: widthDxa, type: WidthType.DXA },
-                shading: { fill: "FFFFFF" }, // Use high compatibility clean white background for table cells in Google Docs
+                shading: { fill: "FFFFFF" },
                 margins: { top: 100, bottom: 100, left: 140, right: 140 },
                 children: [
                     new Paragraph({
                         spacing: { before: 40, after: 40, line: 220 },
-                        children: [
-                            new TextRun({
-                                text: text || '-',
-                                size: 19, // 9.5pt
-                                color: "334155",
-                                font: "Segoe UI",
-                                bold: boldText
-                            })
-                        ]
+                        children: parseInlineMarkdownToTextRuns(text || '-', {
+                            baseSize: 18,
+                            baseColor: "334155",
+                            font: "Inter"
+                        })
                     })
                 ]
             });
 
             docChildren.push(new Table({
                 width: { size: 9360, type: WidthType.DXA },
-                columnWidths: [3276, 1404, 1404, 1404, 1872],
+                columnWidths: [2808, 936, 1404, 1404, 1404, 1404],
                 borders: {
                     top: { style: BorderStyle.SINGLE, size: 6, color: "CBD5E1" },
                     bottom: { style: BorderStyle.SINGLE, size: 6, color: "CBD5E1" },
@@ -1620,60 +2633,69 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                         tableHeader: true,
                         cantSplit: true,
                         children: [
-                            tableHeaderCell(t('actionItemsTableHeaderTask'), 3276),
+                            tableHeaderCell(t('actionItemsTableHeaderTask'), 2808),
+                            tableHeaderCell(t('actionItemsTableHeaderPriority'), 936),
                             tableHeaderCell(t('actionItemsTableHeaderOwner'), 1404),
                             tableHeaderCell(t('actionItemsTableHeaderCollaborators'), 1404),
                             tableHeaderCell(t('actionItemsTableHeaderDeadline'), 1404),
-                            tableHeaderCell(t('actionItemsTableHeaderNotes'), 1872),
+                            tableHeaderCell(t('actionItemsTableHeaderNotes'), 1404),
                         ]
                     }),
                     ...result.actionItems.map((item) => new TableRow({
                         cantSplit: true,
                         children: [
-                            tableBodyCell(item.task, 3276, true),
+                            tableBodyCell(item.task, 2808, true),
+                            tableBodyCell(item.priority || '', 936),
                             tableBodyCell(item.owner || '', 1404),
                             tableBodyCell(item.collaborators || '', 1404),
                             tableBodyCell(item.deadline || '', 1404),
-                            tableBodyCell(item.notes || '', 1872),
+                            tableBodyCell(item.notes || '', 1404),
                         ]
                     }))
                 ]
             }));
             
-            // Subtle layout margin after table
             docChildren.push(new Paragraph({ spacing: { after: 180 } }));
         }
 
-        if (result.pendingIssues?.length > 0) {
-            docChildren.push(createHeading1(t('pendingIssuesSectionTitle')));
+        const summaryHasPending = /Tồn đọng|Pending|Khó khăn/i.test(result.discussionSummary || '');
+        if (result.pendingIssues?.length > 0 && !summaryHasPending && template !== 'summary') {
+            const pendingTitle = template === 'technical'
+              ? (language === 'vi' ? '5. Tồn đọng Kỹ thuật, Blocker & Rủi ro' : '5. Technical Debt, Blockers & Risks')
+              : t('pendingIssuesSectionTitle');
+            docChildren.push(createHeading1(pendingTitle));
             result.pendingIssues.forEach(i => docChildren.push(createBody(i, { bullet: true })));
         }
 
-        if (result.notesAndReferences?.length > 0) {
-            docChildren.push(createHeading1(t('notesSectionTitle')));
+        const summaryHasNotes = /Ghi chú|References|Tài liệu/i.test(result.discussionSummary || '');
+        if (result.notesAndReferences?.length > 0 && !summaryHasNotes && template !== 'summary') {
+            const notesTitle = template === 'technical'
+              ? (language === 'vi' ? '6. Tài liệu Kỹ thuật, API & Tham chiếu' : '6. Technical Documentation & API References')
+              : t('notesSectionTitle');
+            docChildren.push(createHeading1(notesTitle));
             result.notesAndReferences.forEach(n => docChildren.push(createBody(n, { bullet: true })));
         }
 
-        const appendixTitle = language === 'vi' ? 'Phụ lục: Nội dung chi tiết cuộc họp' : 'Appendix: Full Meeting Transcript';
-        docChildren.push(createHeading1(appendixTitle, { pageBreakBefore: true }));
-        transcript.forEach(t => docChildren.push(new Paragraph({
-            spacing: { before: 80, after: 80, line: 240 },
-            children: [
-                new TextRun({ 
-                    text: `${t.speaker ? `[${t.speaker}] ` : ''}[${formatTimestamp(t.startTime)}] `, 
-                    bold: true,
-                    size: 19,
-                    color: "0284C7", // Sky blue theme highlight
-                    font: "Segoe UI"
-                }),
-                new TextRun({
-                    text: t.text,
-                    size: 19,
-                    color: "475569",
-                    font: "Segoe UI"
-                })
-            ]
-        })));
+        if (includeTranscript && transcript && transcript.length > 0) {
+            const appendixTitle = template === 'technical'
+              ? (language === 'vi' ? 'Phụ lục: Nhật ký gỡ băng chi tiết kỹ thuật' : 'Appendix: Full Verbatim Technical Transcript')
+              : (language === 'vi' ? 'Phụ lục: Nội dung chi tiết cuộc họp' : 'Appendix: Full Meeting Transcript');
+            
+            docChildren.push(createHeading1(appendixTitle, { pageBreakBefore: true }));
+            transcript.forEach(t => docChildren.push(new Paragraph({
+                spacing: { before: 80, after: 80, line: 240 },
+                children: [
+                    new TextRun({ 
+                        text: `${t.speaker ? `[${t.speaker}] ` : ''}[${formatTimestamp(t.startTime)}] `, 
+                        bold: true,
+                        size: 19,
+                        color: "0284C7",
+                        font: "Inter"
+                    }),
+                    ...parseInlineMarkdownToTextRuns(t.text, { baseSize: 19, baseColor: "475569", font: "Inter" })
+                ]
+            })));
+        }
 
         const doc = new Document({
             creator: docCreator,
@@ -1685,12 +2707,13 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
         return blob;
     };
 
-    const exportDocx = async (fileName: string, result: AnalysisResult, transcript: TranscriptSegment[]) => {
-        const blob = await generateDocxBlob(result, transcript);
-        saveAs(blob, `${fileName}.docx`);
-    };
-
-    const exportXlsx = async (fileName: string, result: AnalysisResult, transcript: TranscriptSegment[]) => {
+    const exportXlsx = async (
+      fileName: string, 
+      result: AnalysisResult, 
+      transcript: TranscriptSegment[],
+      template: DocumentTemplate = 'standard',
+      includeTranscript: boolean = true
+    ) => {
         const wb = XLSX.utils.book_new();
         
         // 1. Overview Sheet
@@ -1735,51 +2758,57 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
         if (result.actionItems?.length > 0) {
             const actionItems_ws_data = result.actionItems.map(item => ({
                 [t('actionItemsTableHeaderTask')]: item.task,
+                [t('actionItemsTableHeaderPriority')]: item.priority || '-',
                 [t('actionItemsTableHeaderOwner')]: item.owner,
                 [t('actionItemsTableHeaderCollaborators')]: item.collaborators || '-',
                 [t('actionItemsTableHeaderDeadline')]: item.deadline || '-',
                 [t('actionItemsTableHeaderNotes')]: item.notes || '-'
             }));
             const actionItems_ws = XLSX.utils.json_to_sheet(actionItems_ws_data);
-            actionItems_ws['!cols'] = [{ wch: 45 }, { wch: 22 }, { wch: 25 }, { wch: 18 }, { wch: 35 }];
+            actionItems_ws['!cols'] = [{ wch: 45 }, { wch: 15 }, { wch: 22 }, { wch: 25 }, { wch: 18 }, { wch: 35 }];
             XLSX.utils.book_append_sheet(wb, actionItems_ws, t('tabActionItems').substring(3).trim());
         }
 
         // 6. Pending Issues Sheet
-        if (result.pendingIssues?.length > 0) {
+        if (result.pendingIssues?.length > 0 && template !== 'summary') {
             const pending_ws = XLSX.utils.json_to_sheet(result.pendingIssues.map(i => ({ [t('pendingIssuesSectionTitle')]: i })));
             pending_ws['!cols'] = [{ wch: 95 }];
             XLSX.utils.book_append_sheet(wb, pending_ws, t('tabPendingIssues').substring(3).trim());
         }
 
         // 7. Notes Sheet
-        if (result.notesAndReferences?.length > 0) {
+        if (result.notesAndReferences?.length > 0 && template !== 'summary') {
             const notes_ws = XLSX.utils.json_to_sheet(result.notesAndReferences.map(n => ({ [t('notesSectionTitle')]: n })));
             notes_ws['!cols'] = [{ wch: 95 }];
             XLSX.utils.book_append_sheet(wb, notes_ws, t('tabNotes').substring(3).trim());
         }
 
         // 8. Full Transcript Sheet
-        const transcriptTitle = language === 'vi' ? 'Nội dung chi tiết' : 'Transcript';
-        const speakerTitle = language === 'vi' ? 'Người nói' : 'Speaker';
-        const timeTitle = language === 'vi' ? 'Thời gian' : 'Time';
-        const contentTitle = language === 'vi' ? 'Nội dung' : 'Content';
-        
-        const transcript_ws = XLSX.utils.json_to_sheet(transcript.map(t => ({ 
-            [speakerTitle]: t.speaker || '-', 
-            [timeTitle]: formatTimestamp(t.startTime), 
-            [contentTitle]: t.text 
-        })));
-        transcript_ws['!cols'] = [{ wch: 22 }, { wch: 15 }, { wch: 90 }];
-        XLSX.utils.book_append_sheet(wb, transcript_ws, transcriptTitle);
+        if (includeTranscript && transcript && transcript.length > 0) {
+            const transcriptTitle = language === 'vi' ? 'Nội dung chi tiết' : 'Transcript';
+            const speakerTitle = language === 'vi' ? 'Người nói' : 'Speaker';
+            const timeTitle = language === 'vi' ? 'Thời gian' : 'Time';
+            const contentTitle = language === 'vi' ? 'Nội dung' : 'Content';
+            
+            const transcript_ws = XLSX.utils.json_to_sheet(transcript.map(t => ({ 
+                [speakerTitle]: t.speaker || '-', 
+                [timeTitle]: formatTimestamp(t.startTime), 
+                [contentTitle]: t.text 
+            })));
+            transcript_ws['!cols'] = [{ wch: 22 }, { wch: 15 }, { wch: 90 }];
+            XLSX.utils.book_append_sheet(wb, transcript_ws, transcriptTitle);
+        }
 
         XLSX.writeFile(wb, `${fileName}.xlsx`);
     };
 
   return (
-    <div className="relative bg-white/20 border border-white/60 rounded-[36px] shadow-2xl overflow-hidden transition-all duration-300">
+    <div className={isFullscreen 
+      ? "fixed inset-0 sm:inset-[1.5%] z-[200] bg-white/95 backdrop-blur-3xl border border-white/95 rounded-none sm:rounded-[32px] shadow-[0_24px_80px_rgba(15,23,42,0.18)] overflow-y-auto flex flex-col transition-all duration-300"
+      : "relative bg-white/30 backdrop-blur-2xl border border-white/70 rounded-[28px] sm:rounded-[36px] shadow-[0_20px_60px_-15px_rgba(15,23,42,0.06)] overflow-hidden transition-all duration-300 w-full"
+    }>
         {/* Dynamic glossy glass watery backdrop blobs */}
-        <div className="absolute inset-0 overflow-hidden pointer-events-none rounded-[36px] z-0">
+        <div className={`absolute inset-0 overflow-hidden pointer-events-none z-0 ${isFullscreen ? 'rounded-none sm:rounded-[36px]' : 'rounded-[36px]'}`}>
             <div className="absolute top-[-10%] left-[-10%] w-[450px] h-[450px] rounded-full bg-sky-200/35 blur-[120px] animate-pulse" style={{ animationDuration: '9s' }}></div>
             <div className="absolute top-[30%] right-[-10%] w-[500px] h-[500px] rounded-full bg-indigo-200/30 blur-[130px] animate-pulse" style={{ animationDuration: '14s', animationDelay: '2s' }}></div>
             <div className="absolute bottom-[-10%] left-[20%] w-[400px] h-[400px] rounded-full bg-teal-100/25 blur-[110px] animate-pulse" style={{ animationDuration: '11s', animationDelay: '4s' }}></div>
@@ -1797,33 +2826,41 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                                 </span>
                             </div>
                             <button 
-                              onClick={() => handleExport('docx')} 
+                              onClick={() => openExportModal('docx')} 
                               disabled={isExporting} 
-                              title={t('downloadDocx')}
-                              className="group flex items-center justify-center bg-gradient-to-r from-sky-500 to-sky-600 hover:from-sky-400 hover:to-sky-500 text-white font-extrabold font-display h-9 px-3 hover:px-4.5 rounded-full disabled:bg-slate-300 disabled:cursor-wait text-xs transition-all duration-300 shadow-[0_8px_20px_-4px_rgba(14,165,233,0.3)] active:scale-95 border-t border-white/20 select-none overflow-hidden"
+                              title={language === 'vi' ? 'Xuất báo cáo & Chọn Template' : 'Export Report & Select Template'}
+                              className="group flex items-center justify-center bg-gradient-to-r from-indigo-600 via-sky-600 to-teal-600 hover:from-indigo-500 hover:to-teal-500 text-white font-extrabold font-display h-9 px-4 rounded-full disabled:bg-slate-300 disabled:cursor-wait text-xs transition-all duration-300 shadow-[0_8px_20px_-4px_rgba(79,70,229,0.35)] active:scale-95 border-t border-white/30 select-none cursor-pointer flex-shrink-0"
                             >
-                                <DownloadIcon className="w-4 h-4 flex-shrink-0" />
-                                <span className="max-w-0 opacity-0 group-hover:max-w-[140px] group-hover:opacity-100 group-hover:ml-1.5 overflow-hidden transition-all duration-300 ease-out whitespace-nowrap text-[11px]">
-                                    {isExporting ? t('exporting') : t('downloadDocx')}
-                                </span>
-                            </button>
-                            <button 
-                              onClick={() => handleExport('xlsx')} 
-                              disabled={isExporting} 
-                              title={t('downloadXlsx')}
-                              className="group flex items-center justify-center bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-white font-extrabold font-display h-9 px-3 hover:px-4.5 rounded-full disabled:bg-slate-300 disabled:cursor-wait text-xs transition-all duration-300 shadow-[0_8px_20px_-4px_rgba(16,185,129,0.3)] active:scale-95 border-t border-white/20 select-none overflow-hidden"
-                            >
-                                <DownloadIcon className="w-4 h-4 flex-shrink-0" />
-                                <span className="max-w-0 opacity-0 group-hover:max-w-[140px] group-hover:opacity-100 group-hover:ml-1.5 overflow-hidden transition-all duration-300 ease-out whitespace-nowrap text-[11px]">
-                                    {isExporting ? t('exporting') : t('downloadXlsx')}
+                                <DownloadIcon className="w-4 h-4 flex-shrink-0 mr-1.5" />
+                                <span className="text-[11px]">
+                                    {language === 'vi' ? 'Xuất & Mẫu Template' : 'Export & Templates'}
                                 </span>
                             </button>
 
                             <button 
-                              onClick={handleCreateGmailDraft} 
+                              onClick={() => openExportModal('docx')} 
+                              disabled={isExporting} 
+                              title={t('downloadDocx')}
+                              className="group flex items-center justify-center bg-gradient-to-r from-sky-500 to-sky-600 hover:from-sky-400 hover:to-sky-500 text-white font-extrabold font-display h-9 px-3 hover:px-4 rounded-full disabled:bg-slate-300 disabled:cursor-wait text-xs transition-all duration-300 shadow-[0_8px_20px_-4px_rgba(14,165,233,0.3)] active:scale-95 border-t border-white/20 select-none overflow-hidden cursor-pointer"
+                            >
+                                <span className="text-xs mr-1">📄</span>
+                                <span className="text-[11px]">.docx</span>
+                            </button>
+                            <button 
+                              onClick={() => openExportModal('xlsx')} 
+                              disabled={isExporting} 
+                              title={t('downloadXlsx')}
+                              className="group flex items-center justify-center bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-white font-extrabold font-display h-9 px-3 hover:px-4 rounded-full disabled:bg-slate-300 disabled:cursor-wait text-xs transition-all duration-300 shadow-[0_8px_20px_-4px_rgba(16,185,129,0.3)] active:scale-95 border-t border-white/20 select-none overflow-hidden cursor-pointer"
+                            >
+                                <span className="text-xs mr-1">📊</span>
+                                <span className="text-[11px]">.xlsx</span>
+                            </button>
+
+                            <button 
+                              onClick={() => openExportModal('gmail')} 
                               disabled={isGmailLoading} 
                               title={language === 'vi' ? 'Tạo nháp Gmail' : 'Create Gmail Draft'}
-                              className={`group flex items-center justify-center font-extrabold font-display h-9 px-3 hover:px-4.5 rounded-full text-xs transition-all duration-300 active:scale-95 border-t border-white/20 select-none overflow-hidden ${
+                              className={`group flex items-center justify-center font-extrabold font-display h-9 px-3 hover:px-4 rounded-full text-xs transition-all duration-300 active:scale-95 border-t border-white/20 select-none overflow-hidden cursor-pointer ${
                                 draftCreated 
                                   ? 'bg-gradient-to-r from-teal-500 to-teal-600 hover:from-teal-400 hover:to-teal-500 text-white shadow-[0_8px_20px_-4px_rgba(20,184,166,0.3)]'
                                   : 'bg-gradient-to-r from-red-500 to-red-600 hover:from-red-400 hover:to-red-500 text-white shadow-[0_8px_20px_-4px_rgba(239,68,68,0.3)] disabled:bg-slate-300 disabled:cursor-wait'
@@ -1841,23 +2878,23 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                                 ) : (
                                   <EmailIcon className="w-4 h-4 flex-shrink-0" />
                                 )}
-                                <span className="max-w-0 opacity-0 group-hover:max-w-[140px] group-hover:opacity-100 group-hover:ml-1.5 overflow-hidden transition-all duration-300 ease-out whitespace-nowrap text-[11px]">
+                                <span className="ml-1.5 text-[11px]">
                                   {isGmailLoading 
-                                    ? (language === 'vi' ? 'Đang tạo nháp...' : 'Drafting...') 
+                                    ? (language === 'vi' ? 'Đang tạo...' : 'Drafting...') 
                                     : draftCreated 
-                                      ? (language === 'vi' ? 'Đã tạo nháp!' : 'Draft Created!')
-                                      : (language === 'vi' ? 'Tạo nháp Gmail' : 'Create Gmail Draft')}
+                                      ? (language === 'vi' ? 'Đã tạo nháp!' : 'Drafted!')
+                                      : 'Gmail'}
                                 </span>
                             </button>
 
                             <button 
-                              onClick={handleUploadToDrive} 
+                              onClick={() => openExportModal('drive')} 
                               disabled={isDriveLoading} 
                               title={language === 'vi' ? 'Lưu Google Drive' : 'Save to Google Drive'}
-                              className={`group flex items-center justify-center font-extrabold font-display h-9 px-3 hover:px-4.5 rounded-full text-xs transition-all duration-300 active:scale-95 border-t border-white/20 select-none overflow-hidden ${
+                              className={`group flex items-center justify-center font-extrabold font-display h-9 px-3 hover:px-4 rounded-full text-xs transition-all duration-300 active:scale-95 border-t border-white/20 select-none overflow-hidden cursor-pointer ${
                                 driveFileUrl 
                                   ? 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-white shadow-[0_8px_20px_-4px_rgba(245,158,11,0.3)]'
-                                  : 'bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-400 hover:to-indigo-505 text-white shadow-[0_8px_20px_-4px_rgba(99,102,241,0.3)] disabled:bg-slate-300 disabled:cursor-wait'
+                                  : 'bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-400 hover:to-indigo-500 text-white shadow-[0_8px_20px_-4px_rgba(99,102,241,0.3)] disabled:bg-slate-300 disabled:cursor-wait'
                               }`}
                             >
                                 {isDriveLoading ? (
@@ -1885,31 +2922,57 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-end">
+                            <button
+                                onClick={() => setIsFullscreen(!isFullscreen)}
+                                className={`w-full sm:w-auto h-10 text-xs font-bold font-sans px-5 sm:px-6 rounded-full transition-all duration-300 border-2 active:scale-95 flex items-center justify-center space-x-2.5 cursor-pointer shadow-sm ${
+                                    isFullscreen 
+                                        ? 'bg-emerald-50/90 border-emerald-500/40 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-500/60 shadow-[0_4px_12px_rgba(16,185,129,0.08)]' 
+                                        : 'bg-white border-slate-200/80 text-slate-600 hover:bg-slate-50 hover:text-slate-800'
+                                }`}
+                            >
+                                {isFullscreen ? (
+                                    <>
+                                        <svg className="w-4 h-4 text-emerald-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 9L4 4m0 0l5 0M4 4l0 5m11 0l5-5m0 0l-5 0m5 0l0 5m0 6l-5 5m5 0l0-5m0 5l-5 0M4 20l5-5m-5 5l0-5m0 5l5 0" />
+                                        </svg>
+                                        <span>{t('exitFullscreen')}</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg className="w-4 h-4 text-sky-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75v4.5m0-4.5h-4.5m4.5 0L15 9m5.25 11.25v-4.5m0 4.5h-4.5m4.5 0L15 15" />
+                                        </svg>
+                                        <span>{t('fullscreen')}</span>
+                                    </>
+                                )}
+                            </button>
+
                             {setIsFocusMode && (
                                 <button
                                     onClick={() => setIsFocusMode(!isFocusMode)}
-                                    className={`w-full sm:w-auto h-9 text-xs font-bold font-display px-4.5 rounded-full transition-all duration-300 border active:scale-95 flex items-center justify-center space-x-2 cursor-pointer shadow-[inset_0_1.5px_2px_rgba(255,255,255,0.8),_0_4px_12px_rgba(0,0,0,0.025)] ${
+                                    className={`w-full sm:w-auto h-10 text-xs font-bold font-sans px-5 sm:px-6 rounded-full transition-all duration-300 border-2 active:scale-95 flex items-center justify-center space-x-2.5 cursor-pointer shadow-sm ${
                                         isFocusMode 
-                                            ? 'bg-gradient-to-r from-indigo-50/90 to-indigo-100/90 border-indigo-200/50 text-indigo-700 hover:from-indigo-100/95 hover:to-indigo-150/95' 
-                                            : 'bg-white/95 border-slate-200/60 text-slate-600 hover:bg-slate-50/95 hover:text-slate-800'
+                                            ? 'bg-indigo-50/90 border-indigo-500/40 text-indigo-700 hover:bg-indigo-100 hover:border-indigo-500/60 shadow-[0_4px_12px_rgba(99,102,241,0.08)]' 
+                                            : 'bg-white border-slate-200/80 text-slate-600 hover:bg-slate-50 hover:text-slate-800'
                                     }`}
                                 >
                                     {isFocusMode ? (
                                         <>
-                                            <svg className="w-4 h-4 text-indigo-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                                                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                                <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                            <svg className="w-4 h-4 text-indigo-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
                                             </svg>
-                                            <span className="text-[11px]">
+                                            <span>
                                                 {language === 'vi' ? 'Xem lịch sử' : 'Show History'}
                                             </span>
                                         </>
                                     ) : (
                                         <>
-                                            <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.25">
-                                                <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21M15.53 15.53A3 3 0 0110.47 10.47m5.06 5.06L10.47 10.47" />
+                                            <svg className="w-4 h-4 text-slate-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                                <circle cx="12" cy="12" r="10" />
+                                                <circle cx="12" cy="12" r="6" />
+                                                <circle cx="12" cy="12" r="2" />
                                             </svg>
-                                            <span className="text-[11px]">
+                                            <span>
                                                 {language === 'vi' ? 'Chế độ tập trung' : 'Focus Mode'}
                                             </span>
                                         </>
@@ -1918,21 +2981,21 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                             )}
                             <button
                                 onClick={() => setViewMode(viewMode === 'report' ? 'transcript' : 'report')}
-                                className="w-full sm:w-auto h-9 text-xs bg-slate-100/90 hover:bg-slate-200/90 text-slate-700 font-bold font-display px-4.5 rounded-full transition-all duration-300 border border-slate-200/50 active:scale-95 flex items-center justify-center space-x-2 shadow-[inset_0_1.5px_2px_rgba(255,255,255,0.8),_0_4px_12px_rgba(0,0,0,0.02)]"
+                                className="w-full sm:w-auto h-10 text-xs text-slate-700 bg-white hover:bg-slate-50/90 hover:text-slate-900 font-bold font-sans px-5 sm:px-6 rounded-full transition-all duration-300 border-2 border-slate-200 hover:border-slate-350 active:scale-95 flex items-center justify-center space-x-2.5 shadow-sm shadow-slate-100"
                             >
                                 {viewMode === 'report' ? (
                                   <>
                                     <svg className="w-4 h-4 text-slate-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                                      <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125" />
                                     </svg>
-                                    <span className="text-[11px]">{t('viewEditTranscript')}</span>
+                                    <span>{t('viewEditTranscript')}</span>
                                   </>
                                 ) : (
                                   <>
-                                    <svg className="w-4 h-4 text-slate-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                    <svg className="w-4 h-4 text-indigo-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
                                       <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                                     </svg>
-                                    <span className="text-[11px]">{t('viewReport')}</span>
+                                    <span>{t('viewReport')}</span>
                                   </>
                                 )}
                             </button>
@@ -2036,7 +3099,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
             </div>
         )}
 
-        <div className="p-6 md:p-8">
+        <div className="p-4 sm:p-6 md:p-8 lg:p-10">
             {viewMode === 'report' && result ? (
                 <div className="space-y-8">
                     <ReportTabsView result={result} onUpdateResult={onUpdateResult} />
@@ -2045,6 +3108,286 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                 <TranscriptViewEditor {...props} />
             )}
         </div>
+
+        {/* Export Template Selection Modal */}
+        <AnimatePresence>
+          {isExportModalOpen && (
+            <div className="fixed inset-0 z-[300] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 animate-fade-in overflow-y-auto">
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 15 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 15 }}
+                transition={{ duration: 0.2 }}
+                className="relative w-full max-w-2xl bg-white/95 backdrop-blur-2xl rounded-3xl shadow-[0_25px_70px_rgba(15,23,42,0.25)] border border-white/80 overflow-hidden flex flex-col my-auto"
+              >
+                {/* Modal Header */}
+                <div className="flex items-center justify-between p-5 sm:p-6 border-b border-slate-100 bg-gradient-to-r from-slate-50/80 to-sky-50/50">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 to-sky-500 flex items-center justify-center text-white shadow-md shadow-indigo-200 flex-shrink-0">
+                      <DownloadIcon className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-base sm:text-lg font-black text-slate-800 tracking-tight font-display">
+                        {t('exportModalTitle')}
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {t('exportModalSubtitle')}
+                      </p>
+                    </div>
+                  </div>
+                  <button 
+                    type="button"
+                    onClick={() => setIsExportModalOpen(false)}
+                    className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition-colors cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Modal Body */}
+                <div className="p-5 sm:p-6 space-y-6 max-h-[72vh] overflow-y-auto custom-scrollbar">
+                  
+                  {/* Section 1: Choose Template */}
+                  <div className="space-y-3">
+                    <label className="text-xs font-black uppercase tracking-wider text-slate-600 flex items-center space-x-1.5">
+                      <span>{t('templateTitle')}</span>
+                    </label>
+
+                    <div className="grid grid-cols-1 gap-3">
+                      
+                      {/* Option 1: Standard MoM */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTemplate('standard')}
+                        className={`relative text-left p-4 rounded-2xl border transition-all duration-200 flex items-start space-x-3.5 cursor-pointer ${
+                          selectedTemplate === 'standard'
+                            ? 'bg-gradient-to-r from-sky-50/90 to-indigo-50/80 border-sky-500 shadow-md ring-2 ring-sky-400/40'
+                            : 'bg-white hover:bg-slate-50/80 border-slate-200/80 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0 mt-0.5 ${
+                          selectedTemplate === 'standard' ? 'bg-sky-500 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
+                        }`}>
+                          📋
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-extrabold text-slate-800 font-display">
+                              {t('templateStandardTitle')}
+                            </span>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 flex-shrink-0">
+                              {t('templateStandardBadge')}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                            {t('templateStandardDesc')}
+                          </p>
+                        </div>
+                        {selectedTemplate === 'standard' && (
+                          <div className="w-5 h-5 rounded-full bg-sky-500 text-white flex items-center justify-center flex-shrink-0 self-center">
+                            <CheckIcon className="w-3.5 h-3.5" />
+                          </div>
+                        )}
+                      </button>
+
+                      {/* Option 2: Executive Brief */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTemplate('summary')}
+                        className={`relative text-left p-4 rounded-2xl border transition-all duration-200 flex items-start space-x-3.5 cursor-pointer ${
+                          selectedTemplate === 'summary'
+                            ? 'bg-gradient-to-r from-amber-50/90 to-orange-50/80 border-amber-500 shadow-md ring-2 ring-amber-400/40'
+                            : 'bg-white hover:bg-slate-50/80 border-slate-200/80 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0 mt-0.5 ${
+                          selectedTemplate === 'summary' ? 'bg-amber-500 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
+                        }`}>
+                          ⚡
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-extrabold text-slate-800 font-display">
+                              {t('templateSummaryTitle')}
+                            </span>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 flex-shrink-0">
+                              {t('templateSummaryBadge')}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                            {t('templateSummaryDesc')}
+                          </p>
+                        </div>
+                        {selectedTemplate === 'summary' && (
+                          <div className="w-5 h-5 rounded-full bg-amber-500 text-white flex items-center justify-center flex-shrink-0 self-center">
+                            <CheckIcon className="w-3.5 h-3.5" />
+                          </div>
+                        )}
+                      </button>
+
+                      {/* Option 3: Technical Detail */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTemplate('technical')}
+                        className={`relative text-left p-4 rounded-2xl border transition-all duration-200 flex items-start space-x-3.5 cursor-pointer ${
+                          selectedTemplate === 'technical'
+                            ? 'bg-gradient-to-r from-indigo-50/90 to-violet-50/80 border-indigo-500 shadow-md ring-2 ring-indigo-400/40'
+                            : 'bg-white hover:bg-slate-50/80 border-slate-200/80 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0 mt-0.5 ${
+                          selectedTemplate === 'technical' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
+                        }`}>
+                          🛠️
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-extrabold text-slate-800 font-display">
+                              {t('templateTechnicalTitle')}
+                            </span>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 flex-shrink-0">
+                              {t('templateTechnicalBadge')}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                            {t('templateTechnicalDesc')}
+                          </p>
+                        </div>
+                        {selectedTemplate === 'technical' && (
+                          <div className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center flex-shrink-0 self-center">
+                            <CheckIcon className="w-3.5 h-3.5" />
+                          </div>
+                        )}
+                      </button>
+
+                    </div>
+                  </div>
+
+                  {/* Section 2: Choose Export Format */}
+                  <div className="space-y-3">
+                    <label className="text-xs font-black uppercase tracking-wider text-slate-600 flex items-center space-x-1.5">
+                      <span>{t('exportFormatTitle')}</span>
+                    </label>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      
+                      {/* Word */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFormat('docx')}
+                        className={`p-3 rounded-xl border font-semibold text-xs transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer ${
+                          selectedFormat === 'docx'
+                            ? 'bg-sky-500 text-white border-sky-600 shadow-sm ring-2 ring-sky-300'
+                            : 'bg-white text-slate-700 border-slate-200 hover:border-sky-300 hover:bg-sky-50/50'
+                        }`}
+                      >
+                        <span className="text-base">📄</span>
+                        <span>Word (.docx)</span>
+                      </button>
+
+                      {/* Excel */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFormat('xlsx')}
+                        className={`p-3 rounded-xl border font-semibold text-xs transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer ${
+                          selectedFormat === 'xlsx'
+                            ? 'bg-emerald-600 text-white border-emerald-700 shadow-sm ring-2 ring-emerald-300'
+                            : 'bg-white text-slate-700 border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/50'
+                        }`}
+                      >
+                        <span className="text-base">📊</span>
+                        <span>Excel (.xlsx)</span>
+                      </button>
+
+                      {/* Gmail Draft */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFormat('gmail')}
+                        className={`p-3 rounded-xl border font-semibold text-xs transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer ${
+                          selectedFormat === 'gmail'
+                            ? 'bg-rose-600 text-white border-rose-700 shadow-sm ring-2 ring-rose-300'
+                            : 'bg-white text-slate-700 border-slate-200 hover:border-rose-300 hover:bg-rose-50/50'
+                        }`}
+                      >
+                        <span className="text-base">✉️</span>
+                        <span>Gmail Draft</span>
+                      </button>
+
+                      {/* Google Drive */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFormat('drive')}
+                        className={`p-3 rounded-xl border font-semibold text-xs transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer ${
+                          selectedFormat === 'drive'
+                            ? 'bg-amber-600 text-white border-amber-700 shadow-sm ring-2 ring-amber-300'
+                            : 'bg-white text-slate-700 border-slate-200 hover:border-amber-300 hover:bg-amber-50/50'
+                        }`}
+                      >
+                        <span className="text-base">☁️</span>
+                        <span>Google Drive</span>
+                      </button>
+
+                    </div>
+                  </div>
+
+                  {/* Section 3: Options */}
+                  <div className="pt-2 border-t border-slate-100">
+                    <label className="flex items-center space-x-3 cursor-pointer group select-none">
+                      <input
+                        type="checkbox"
+                        checked={includeTranscriptOption}
+                        onChange={(e) => setIncludeTranscriptOption(e.target.checked)}
+                        className="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 border-slate-300 cursor-pointer"
+                      />
+                      <span className="text-xs font-semibold text-slate-700 group-hover:text-slate-900 transition-colors">
+                        {t('optionIncludeTranscript')}
+                      </span>
+                    </label>
+                  </div>
+
+                </div>
+
+                {/* Modal Footer */}
+                <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+                  <div className="text-xs text-slate-500 font-medium hidden sm:block">
+                    {language === 'vi' ? 'Sẵn sàng xuất file theo định dạng đã chọn.' : 'Ready to export in your selected template.'}
+                  </div>
+                  <div className="flex items-center space-x-2.5 w-full sm:w-auto justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setIsExportModalOpen(false)}
+                      className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-600 font-bold text-xs transition-colors cursor-pointer"
+                    >
+                      {t('cancel')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleExecuteExport}
+                      disabled={isExporting || isGmailLoading || isDriveLoading}
+                      className="flex-1 sm:flex-initial px-5 py-2.5 rounded-xl bg-gradient-to-r from-sky-500 via-indigo-600 to-indigo-700 hover:from-sky-400 hover:to-indigo-600 text-white font-extrabold text-xs shadow-md shadow-sky-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-wait flex items-center justify-center space-x-2 cursor-pointer"
+                    >
+                      {(isExporting || isGmailLoading || isDriveLoading) ? (
+                        <>
+                          <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                          <span>{t('exporting')}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>{t('btnExportNow')}</span>
+                          <DownloadIcon className="w-4 h-4" />
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
     </div>
   );
 };

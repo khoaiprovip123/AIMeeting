@@ -574,7 +574,7 @@ export const SystemDiagnostics: React.FC = () => {
         ) : (
           <button 
             onClick={() => setIsExpanded(true)}
-            className="flex items-center space-x-2 bg-white hover:bg-slate-50 border border-slate-200/80 p-2.5 px-4.5 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer select-none ring-4 ring-slate-100/40 active:scale-95 group"
+            className="flex items-center space-x-2 bg-white hover:bg-slate-50 border border-slate-200/80 p-2.5 px-5 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer select-none ring-4 ring-slate-100/40 active:scale-95 group"
             title={getTranslation('title')}
           >
             <span className="relative flex h-2.5 w-2.5">

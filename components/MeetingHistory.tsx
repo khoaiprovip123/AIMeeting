@@ -86,6 +86,211 @@ const CATEGORIES_META: Record<string, {
   }
 };
 
+interface QuickPreviewCardProps {
+  meeting: MeetingDocument;
+  hoverPos: { x: number; y: number } | null;
+  onClose: () => void;
+  onSelect: (m: MeetingDocument) => void;
+  vi: boolean;
+  onMouseEnterCard: () => void;
+  onMouseLeaveCard: () => void;
+}
+
+const QuickPreviewCard: React.FC<QuickPreviewCardProps> = ({
+  meeting,
+  hoverPos,
+  onClose,
+  onSelect,
+  vi,
+  onMouseEnterCard,
+  onMouseLeaveCard
+}) => {
+  const result = meeting.result;
+  const overview = result?.overview;
+  const mainObjectives = result?.mainObjectives || [];
+  const decisions = result?.decisions || [];
+  const actionItems = result?.actionItems || [];
+  const pendingIssues = result?.pendingIssues || [];
+
+  let popoverStyle: React.CSSProperties = {
+    position: 'fixed',
+    zIndex: 100,
+  };
+
+  if (typeof window !== 'undefined' && hoverPos) {
+    const isMobile = window.innerWidth < 640;
+    if (isMobile) {
+      popoverStyle = {
+        position: 'fixed',
+        bottom: '16px',
+        left: '16px',
+        right: '16px',
+        zIndex: 100,
+      };
+    } else {
+      const spaceRight = window.innerWidth - (hoverPos.x + 320);
+      let left = spaceRight > 380 ? hoverPos.x + 320 : hoverPos.x - 380;
+      if (left < 16) left = 16;
+      let top = Math.min(hoverPos.y, window.innerHeight - 450);
+      if (top < 16) top = 16;
+
+      popoverStyle = {
+        position: 'fixed',
+        left: `${left}px`,
+        top: `${top}px`,
+        width: '360px',
+        zIndex: 100,
+      };
+    }
+  }
+
+  return (
+    <div
+      style={popoverStyle}
+      onMouseEnter={onMouseEnterCard}
+      onMouseLeave={onMouseLeaveCard}
+      className="bg-slate-900/95 text-slate-100 backdrop-blur-2xl border border-slate-700/80 rounded-2xl shadow-2xl p-4 animate-fade-in text-xs space-y-3 pointer-events-auto ring-1 ring-white/10"
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between gap-2 border-b border-slate-800 pb-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 flex-wrap mb-1">
+            <span className="text-[9px] font-mono font-black uppercase px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse"></span>
+              <span>{vi ? '⚡ TÓM TẮT NHANH' : '⚡ QUICK PREVIEW'}</span>
+            </span>
+            {result?.category && (
+              <span className="text-[9px] font-mono font-bold uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700/60">
+                {result.category}
+              </span>
+            )}
+            <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700/60">
+              {meeting.language === 'vi' ? 'VIE' : 'ENG'}
+            </span>
+          </div>
+          <h4 className="font-extrabold text-slate-100 font-display text-sm leading-snug truncate">
+            {overview?.topic || (vi ? 'Chờ phân tích AI (Bản thô)' : 'Pending AI Analysis (Raw)')}
+          </h4>
+        </div>
+        <button
+          onClick={onClose}
+          className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors shrink-0"
+          title={vi ? 'Đóng preview' : 'Close preview'}
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* Bullet Points Content */}
+      {!result ? (
+        <div className="p-3 bg-slate-800/60 rounded-xl border border-slate-700/50 text-slate-300">
+          <p className="font-bold text-amber-300 mb-1 font-mono text-[10px]">⚠️ {vi ? 'Bản ghi thô chưa phân tích' : 'Unanalyzed raw audio'}</p>
+          <p className="text-[11px] text-slate-400 leading-relaxed line-clamp-4">
+            {meeting.transcript && meeting.transcript.length > 0 
+              ? meeting.transcript.map(t => t.text).join(' ').substring(0, 180) + '...'
+              : (vi ? 'Chưa có nội dung gỡ băng.' : 'No transcript content.')}
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3 max-h-64 overflow-y-auto pr-1 text-slate-200 custom-scrollbar">
+          {/* Main Objectives */}
+          {mainObjectives.length > 0 && (
+            <div className="bg-slate-800/40 p-2.5 rounded-xl border border-slate-800">
+              <p className="font-extrabold text-sky-400 text-[10px] uppercase tracking-wider font-mono flex items-center gap-1.5 mb-1.5">
+                <span>🎯</span>
+                <span>{vi ? 'Mục tiêu cuộc họp' : 'Key Objectives'}</span>
+              </p>
+              <ul className="space-y-1 list-none pl-0.5">
+                {mainObjectives.slice(0, 3).map((obj, idx) => (
+                  <li key={idx} className="flex items-start gap-1.5 text-[11px] text-slate-300 leading-snug">
+                    <span className="text-sky-400 font-bold shrink-0">•</span>
+                    <span className="line-clamp-2">{obj}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Key Decisions */}
+          {decisions.length > 0 && (
+            <div className="bg-emerald-950/30 p-2.5 rounded-xl border border-emerald-900/40">
+              <p className="font-extrabold text-emerald-400 text-[10px] uppercase tracking-wider font-mono flex items-center gap-1.5 mb-1.5">
+                <span>⚡</span>
+                <span>{vi ? 'Quyết định đã chốt' : 'Key Decisions'}</span>
+                <span className="text-[9px] font-mono text-emerald-500">({decisions.length})</span>
+              </p>
+              <ul className="space-y-1 list-none pl-0.5">
+                {decisions.slice(0, 3).map((d, idx) => (
+                  <li key={idx} className="flex items-start gap-1.5 text-[11px] text-emerald-100 font-medium leading-snug">
+                    <span className="text-emerald-400 font-extrabold shrink-0">✓</span>
+                    <span className="line-clamp-2">{typeof d === 'string' ? d : d.decision}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Action Items */}
+          {actionItems.length > 0 && (
+            <div className="bg-indigo-950/30 p-2.5 rounded-xl border border-indigo-900/40">
+              <p className="font-extrabold text-indigo-300 text-[10px] uppercase tracking-wider font-mono flex items-center gap-1.5 mb-1.5">
+                <span>📌</span>
+                <span>{vi ? 'Công việc được giao' : 'Assigned Tasks'}</span>
+                <span className="text-[9px] font-mono text-indigo-400">({actionItems.length})</span>
+              </p>
+              <ul className="space-y-1.5 list-none pl-0.5">
+                {actionItems.slice(0, 3).map((item, idx) => (
+                  <li key={idx} className="bg-slate-900/80 p-2 rounded-lg border border-slate-800 text-[11px]">
+                    <p className="line-clamp-2 font-medium text-slate-200 leading-snug">{item.task}</p>
+                    <div className="flex items-center gap-2 text-[9.5px] font-mono text-slate-400 mt-1 flex-wrap">
+                      {item.owner && <span className="text-sky-300 font-semibold">👤 {item.owner}</span>}
+                      {item.deadline && <span className="text-amber-300">⏰ {item.deadline}</span>}
+                      {item.priority && (
+                        <span className="px-1 py-0.2 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                          {item.priority}
+                        </span>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Pending Issues */}
+          {pendingIssues.length > 0 && (
+            <div className="bg-amber-950/20 p-2.5 rounded-xl border border-amber-900/30">
+              <p className="font-extrabold text-amber-400 text-[10px] uppercase tracking-wider font-mono flex items-center gap-1.5 mb-1.5">
+                <span>⚠️</span>
+                <span>{vi ? 'Vấn đề tồn đọng' : 'Pending Items'}</span>
+              </p>
+              <ul className="space-y-1 list-none pl-0.5">
+                {pendingIssues.slice(0, 2).map((issue, idx) => (
+                  <li key={idx} className="flex items-start gap-1.5 text-[11px] text-amber-200/90 leading-snug">
+                    <span className="text-amber-400 shrink-0">•</span>
+                    <span className="line-clamp-2">{issue}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Footer */}
+      <button
+        onClick={() => {
+          onSelect(meeting);
+          onClose();
+        }}
+        className="w-full py-2 px-3 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-xl transition-all shadow-md flex items-center justify-center space-x-1 cursor-pointer"
+      >
+        <span>{vi ? 'Xem toàn bộ biên bản chi tiết ➔' : 'View Full Meeting MEMO ➔'}</span>
+      </button>
+    </div>
+  );
+};
+
 export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting, selectedId, refreshTrigger = 0, onMergeMeetings }) => {
   const { t, language } = useTranslation();
   const [googleUser, setGoogleUser] = useState<User | null>(null);
@@ -96,6 +301,11 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grouped'>('list');
 
+  // Quick Preview states
+  const [hoveredMeeting, setHoveredMeeting] = useState<MeetingDocument | null>(null);
+  const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
+  const hoverTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+
   // Multi-Select synthesis merge states
   const [isMultiSelectMode, setIsMultiSelectMode] = useState<boolean>(false);
   const [selectedMergeIds, setSelectedMergeIds] = useState<string[]>([]);
@@ -104,6 +314,22 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
   const [mergeError, setMergeError] = useState<string | null>(null);
 
   const vi = language === 'vi';
+
+  const handleItemMouseEnter = (meeting: MeetingDocument, e: React.MouseEvent) => {
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+    const rect = e.currentTarget.getBoundingClientRect();
+    setHoverPos({ x: rect.left, y: rect.top });
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredMeeting(meeting);
+    }, 220);
+  };
+
+  const handleItemMouseLeave = () => {
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredMeeting(null);
+    }, 250);
+  };
 
   const handleToggleMergeItem = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -175,7 +401,6 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
       },
       () => {
         setGoogleUser(null);
-        setMeetings([]);
       }
     );
     return () => {
@@ -184,7 +409,6 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
   }, []);
 
   const loadMeetings = async () => {
-    if (!googleUser) return;
     setLoading(true);
     try {
       const data = await getUserMeetings();
@@ -196,13 +420,9 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
     }
   };
 
-  // Sync / load meetings when user or trigger changes
+  // Sync / load meetings when user or trigger changes or on mount
   useEffect(() => {
-    if (googleUser) {
-      loadMeetings();
-    } else {
-      setMeetings([]);
-    }
+    loadMeetings();
   }, [googleUser, refreshTrigger]);
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
@@ -320,7 +540,7 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
   }
 
   return (
-    <div className="bg-white/80 backdrop-blur-xl border border-slate-200/60 p-6 rounded-3xl custom-shadow">
+    <div className="bg-white/55 backdrop-blur-xl border border-white/80 p-6 rounded-[32px] shadow-[inset_0_2px_4px_rgba(255,255,255,0.85),_0_12px_28px_rgba(31,38,135,0.0355)] hover:shadow-[inset_0_2px_4px_rgba(255,255,255,0.85),_0_16px_36px_rgba(31,38,135,0.055)] transition-all duration-300">
       <div className="flex items-center justify-between mb-5 pb-3.5 border-b border-slate-100 flex-wrap gap-2">
         <div className="flex items-center space-x-2.5">
           <div className="text-sky-500 bg-sky-50 p-1.5 rounded-lg">
@@ -390,7 +610,7 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={t('searchMeetingsPlaceholder')}
-                className="w-full pl-9 pr-8 py-2 bg-slate-50/70 border border-slate-200/60 rounded-xl text-[11.5px] font-bold text-slate-700 outline-none focus:ring-1 focus:ring-sky-500 focus:bg-white focus:border-sky-500 transition-all placeholder:text-slate-400/80"
+                className="w-full pl-9 pr-8 py-2.5 bg-white/45 backdrop-blur-md border border-white/80 rounded-xl text-[11.5px] font-semibold text-slate-700 outline-none focus:ring-1 focus:ring-sky-500 focus:bg-white/70 focus:border-sky-400/60 transition-all placeholder:text-slate-400 shadow-sm shadow-slate-100/50"
               />
               {searchQuery && (
                 <button
@@ -406,13 +626,13 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
             </div>
 
             {/* View Mode Toggle Selector */}
-            <div className="flex items-center bg-slate-100/90 p-0.5 rounded-xl border border-slate-200/50 shrink-0 shadow-sm">
+            <div className="flex items-center bg-white/40 backdrop-blur-sm p-0.5 rounded-xl border border-white/80 shrink-0 shadow-sm">
               <button
                 onClick={() => setViewMode('list')}
                 className={`p-1.5 rounded-lg transition-all ${
                   viewMode === 'list'
-                    ? 'bg-white text-sky-600 shadow-sm font-black'
-                    : 'text-slate-450 hover:text-slate-700'
+                    ? 'bg-white/85 text-sky-600 shadow-sm font-bold border border-white/50'
+                    : 'text-slate-500 hover:text-slate-700'
                 }`}
                 title={vi ? 'Dạng danh sách' : 'List View'}
               >
@@ -424,8 +644,8 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
                 onClick={() => setViewMode('grouped')}
                 className={`p-1.5 rounded-lg transition-all ${
                   viewMode === 'grouped'
-                    ? 'bg-white text-sky-600 shadow-sm font-black'
-                    : 'text-slate-450 hover:text-slate-705'
+                    ? 'bg-white/85 text-sky-600 shadow-sm font-bold border border-white/50'
+                    : 'text-slate-500 hover:text-slate-705'
                 }`}
                 title={vi ? 'Nhóm theo thể loại' : 'Group by Category'}
               >
@@ -443,13 +663,13 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
               className={`px-2.5 py-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg border transition-all duration-250 shrink-0 flex items-center gap-1.5 ${
                 selectedCategoryFilter === null
                   ? 'bg-slate-800 text-white border-slate-800 shadow-sm'
-                  : 'bg-slate-50/70 text-slate-500 border-slate-200/60 hover:bg-slate-100/75'
+                  : 'bg-white/40 text-slate-500 border-white/80 hover:bg-white/60 shadow-sm backdrop-blur-sm'
               }`}
             >
               <span>⭐</span>
               <span>{vi ? 'Tất cả' : 'All'}</span>
               <span className={`text-[8.5px] font-mono font-bold px-1 rounded-md ${
-                selectedCategoryFilter === null ? 'bg-slate-700 text-slate-100' : 'bg-slate-200/60 text-slate-600'
+                selectedCategoryFilter === null ? 'bg-slate-700 text-slate-100' : 'bg-slate-200/50 text-slate-600'
               }`}>
                 {categoryCounts.all}
               </span>
@@ -462,14 +682,14 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
                   key={key}
                   onClick={() => setSelectedCategoryFilter(meta.labelEn)}
                   className={`px-2.5 py-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg border transition-all duration-250 shrink-0 flex items-center gap-1.5 ${
-                    isSelected ? meta.activeClass : 'bg-slate-50/70 text-slate-500 border-slate-200/60 hover:bg-slate-100/75'
+                    isSelected ? meta.activeClass : 'bg-white/40 text-slate-500 border-white/80 hover:bg-white/60 shadow-sm backdrop-blur-sm'
                   }`}
                 >
                   <span>{meta.emoji}</span>
                   <span>{vi ? meta.labelVi : meta.labelEn}</span>
                   {count > 0 && (
                     <span className={`text-[8.5px] font-mono font-bold px-1.5 py-0.2 rounded-md ${
-                      isSelected ? 'bg-black/20 text-white' : 'bg-slate-200/60 text-slate-600'
+                      isSelected ? 'bg-black/20 text-white' : 'bg-slate-200/50 text-slate-600'
                     }`}>
                       {count}
                     </span>
@@ -516,6 +736,8 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
                         return (
                           <div
                             key={meeting.id}
+                            onMouseEnter={(e) => handleItemMouseEnter(meeting, e)}
+                            onMouseLeave={handleItemMouseLeave}
                             onClick={(e) => {
                               if (isDeleting) return;
                               if (isMultiSelectMode) {
@@ -525,12 +747,12 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
                                 onSelectMeeting(meeting);
                               }
                             }}
-                            className={`relative group p-3 rounded-xl border transition-all duration-300 cursor-pointer flex items-center space-x-3 select-none ${
+                            className={`relative group p-3.5 rounded-2xl border transition-all duration-300 cursor-pointer flex items-center space-x-3 select-none ${
                               isDisabled ? 'opacity-40 cursor-not-allowed' : ''
                             } ${
                               isSelected 
-                                ? 'bg-sky-50/60 border-sky-300 shadow-sm ring-1 ring-sky-200/50' 
-                                : 'bg-white hover:bg-slate-50 border-slate-100 hover:border-slate-300/50 hover:shadow-sm'
+                                ? 'bg-sky-500/10 border-sky-400/80 shadow-[0_4px_20px_-2px_rgba(14,165,233,0.15)] ring-1 ring-sky-450/20' 
+                                : 'bg-white/45 backdrop-blur-md hover:bg-white/65 border-white/70 hover:border-white hover:shadow-md'
                             }`}
                           >
                             {isMultiSelectMode && (
@@ -594,34 +816,51 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
                                   </div>
                                 </div>
 
-                                <div className="absolute right-2 top-2.5 z-10">
+                                <div className="absolute right-2 top-2.5 z-10 flex items-center space-x-0.5">
                                   {!isMultiSelectMode && (
-                                    isDeleting ? (
-                                      <div className="flex items-center space-x-1 animate-fade-in bg-white border border-slate-200/70 p-1 rounded-lg shadow-md">
-                                        <button
-                                          onClick={(e) => handleDelete(meeting.id, e)}
-                                          className="bg-rose-600 hover:bg-rose-700 text-white font-extrabold px-1.5 py-0.5 rounded text-[8px] transition-all"
-                                        >
-                                          {vi ? 'Xóa' : 'Del'}
-                                        </button>
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); setDeletingId(null); }}
-                                          className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-extrabold px-1 py-0.5 rounded text-[8px] transition-all"
-                                        >
-                                          {vi ? 'Hủy' : 'Esc'}
-                                        </button>
-                                      </div>
-                                    ) : (
+                                    <>
                                       <button
-                                        onClick={(e) => { e.stopPropagation(); setDeletingId(meeting.id); }}
-                                        className="p-1 hover:bg-slate-100 text-slate-400 hover:text-rose-600 rounded-lg opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all duration-200"
-                                        title={vi ? 'Xóa biên bản này' : 'Delete this report'}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const rect = e.currentTarget.getBoundingClientRect();
+                                          setHoverPos({ x: rect.left, y: rect.top });
+                                          setHoveredMeeting(hoveredMeeting?.id === meeting.id ? null : meeting);
+                                        }}
+                                        className="p-1 hover:bg-sky-50 text-slate-400 hover:text-sky-600 rounded-lg opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all duration-200"
+                                        title={vi ? 'Xem tóm tắt nhanh (Quick Preview)' : 'Quick preview summary'}
                                       >
-                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                                          <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                                         </svg>
                                       </button>
-                                    )
+                                      {isDeleting ? (
+                                        <div className="flex items-center space-x-1 animate-fade-in bg-white border border-slate-200/70 p-1 rounded-lg shadow-md">
+                                          <button
+                                            onClick={(e) => handleDelete(meeting.id, e)}
+                                            className="bg-rose-600 hover:bg-rose-700 text-white font-extrabold px-1.5 py-0.5 rounded text-[8px] transition-all"
+                                          >
+                                            {vi ? 'Xóa' : 'Del'}
+                                          </button>
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); setDeletingId(null); }}
+                                            className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-extrabold px-1 py-0.5 rounded text-[8px] transition-all"
+                                          >
+                                            {vi ? 'Hủy' : 'Esc'}
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); setDeletingId(meeting.id); }}
+                                          className="p-1 hover:bg-slate-100 text-slate-400 hover:text-rose-600 rounded-lg opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all duration-200"
+                                          title={vi ? 'Xóa biên bản này' : 'Delete this report'}
+                                        >
+                                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                          </svg>
+                                        </button>
+                                      )}
+                                    </>
                                   )}
                                 </div>
                               </div>
@@ -647,6 +886,8 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
                 return (
                   <div
                     key={meeting.id}
+                    onMouseEnter={(e) => handleItemMouseEnter(meeting, e)}
+                    onMouseLeave={handleItemMouseLeave}
                     onClick={(e) => {
                       if (isDeleting) return;
                       if (isMultiSelectMode) {
@@ -660,8 +901,8 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
                       isDisabled ? 'opacity-40 cursor-not-allowed' : ''
                     } ${
                       isSelected 
-                        ? 'bg-sky-50/60 border-sky-300 shadow-sm ring-1 ring-sky-200/50' 
-                        : 'bg-slate-50/60 hover:bg-slate-50/90 border-slate-200/40 hover:border-slate-300/60 hover:shadow-sm'
+                        ? 'bg-sky-500/10 border-sky-400/80 shadow-[0_4px_20px_-2px_rgba(14,165,233,0.15)] ring-1 ring-sky-450/20' 
+                        : 'bg-white/45 backdrop-blur-md hover:bg-white/65 border-white/70 hover:border-white hover:shadow-md'
                     }`}
                   >
                     {isMultiSelectMode && (
@@ -705,34 +946,51 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
                           )}
                         </div>
 
-                        <div className="absolute right-2 top-2 z-10 animate-fade-in">
+                        <div className="absolute right-2 top-2 z-10 flex items-center space-x-0.5 animate-fade-in">
                           {!isMultiSelectMode && (
-                            isDeleting ? (
-                              <div className="flex items-center space-x-1 animate-fade-in bg-white border border-slate-200/70 p-1.5 rounded-xl shadow-md">
-                                <button
-                                  onClick={(e) => handleDelete(meeting.id, e)}
-                                  className="bg-rose-600 hover:bg-rose-700 text-white font-extrabold px-2 py-1 rounded-lg text-[9px] transition-all"
-                                >
-                                  {vi ? 'Xóa' : 'Del'}
-                                </button>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); setDeletingId(null); }}
-                                  className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-extrabold px-1.5 py-1 rounded-lg text-[9px] transition-all"
-                                >
-                                  {vi ? 'Hủy' : 'Esc'}
-                                </button>
-                              </div>
-                            ) : (
+                            <>
                               <button
-                                onClick={(e) => { e.stopPropagation(); setDeletingId(meeting.id); }}
-                                className="p-1.5 hover:bg-slate-200/80 text-slate-400 hover:text-rose-600 rounded-xl opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all duration-200"
-                                title={vi ? 'Xóa biên bản này' : 'Delete this report'}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  setHoverPos({ x: rect.left, y: rect.top });
+                                  setHoveredMeeting(hoveredMeeting?.id === meeting.id ? null : meeting);
+                                }}
+                                className="p-1.5 hover:bg-sky-50 text-slate-400 hover:text-sky-600 rounded-xl opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all duration-200"
+                                title={vi ? 'Xem tóm tắt nhanh (Quick Preview)' : 'Quick preview summary'}
                               >
-                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                                 </svg>
                               </button>
-                            )
+                              {isDeleting ? (
+                                <div className="flex items-center space-x-1 animate-fade-in bg-white border border-slate-200/70 p-1.5 rounded-xl shadow-md">
+                                  <button
+                                    onClick={(e) => handleDelete(meeting.id, e)}
+                                    className="bg-rose-600 hover:bg-rose-700 text-white font-extrabold px-2 py-1 rounded-lg text-[9px] transition-all"
+                                  >
+                                    {vi ? 'Xóa' : 'Del'}
+                                  </button>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setDeletingId(null); }}
+                                    className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-extrabold px-1.5 py-1 rounded-lg text-[9px] transition-all"
+                                  >
+                                    {vi ? 'Hủy' : 'Esc'}
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setDeletingId(meeting.id); }}
+                                  className="p-1.5 hover:bg-slate-200/80 text-slate-400 hover:text-rose-600 rounded-xl opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all duration-200"
+                                  title={vi ? 'Xóa biên bản này' : 'Delete this report'}
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                  </svg>
+                                </button>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>
@@ -882,6 +1140,20 @@ export const MeetingHistory: React.FC<MeetingHistoryProps> = ({ onSelectMeeting,
             </div>
           )}
         </>
+      )}
+
+      {hoveredMeeting && (
+        <QuickPreviewCard
+          meeting={hoveredMeeting}
+          hoverPos={hoverPos}
+          onClose={() => setHoveredMeeting(null)}
+          onSelect={onSelectMeeting}
+          vi={vi}
+          onMouseEnterCard={() => {
+            if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+          }}
+          onMouseLeaveCard={handleItemMouseLeave}
+        />
       )}
     </div>
   );

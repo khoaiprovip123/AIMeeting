@@ -4,7 +4,7 @@ import { SparklesIcon, ListIcon, TargetIcon } from './Icons';
 import { useTranslation } from '../i18n';
 
 const FeatureCard: React.FC<{ icon: React.ReactNode; title: string; description: string }> = ({ icon, title, description }) => (
-    <div className="group bg-white/60 hover:bg-white border border-slate-200/60 hover:border-sky-500/30 p-8 rounded-2xl text-center flex flex-col items-center custom-shadow hover:shadow-xl hover:-translate-y-1 transition-all duration-300">
+    <div className="group bg-white/40 hover:bg-white/60 backdrop-blur-md border border-white/85 hover:border-white p-8 rounded-[24px] text-center flex flex-col items-center shadow-[inset_0_2px_4px_rgba(255,255,255,0.75),_0_10px_30px_-10px_rgba(148,163,184,0.12)] hover:shadow-[inset_0_2px_4px_rgba(255,255,255,0.85),_0_20px_40px_-15px_rgba(148,163,184,0.18)] hover:-translate-y-1 transition-all duration-300">
         <div className="bg-gradient-to-tr from-sky-50 to-indigo-50/50 p-4 rounded-2xl mb-5 group-hover:scale-110 group-hover:from-sky-500 group-hover:to-indigo-600 transition-all duration-300 text-sky-500 group-hover:text-white shadow-inner">
             {icon}
         </div>
@@ -50,7 +50,7 @@ export const WelcomeScreen: React.FC = () => {
             </div>
 
             {/* Audio size cutting and volume boosting tips card */}
-            <div className="mt-8 max-w-3xl mx-auto bg-amber-50/65 hover:bg-amber-55/65 border border-amber-200/50 p-5 rounded-2xl text-left shadow-sm hover:shadow-md transition-all duration-300">
+            <div className="mt-8 max-w-3xl mx-auto bg-amber-50/40 backdrop-blur-md border border-amber-200/40 p-5 rounded-[24px] text-left shadow-[inset_0_2px_4px_rgba(255,255,255,0.7),_0_8px_24px_rgba(245,158,11,0.04)] hover:shadow-md transition-all duration-300">
                 <div className="flex items-start space-x-3.5">
                     <span className="text-2xl mt-0.5" role="img" aria-label="lightbulb">💡</span>
                     <div>

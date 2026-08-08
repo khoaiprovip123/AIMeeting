@@ -9,9 +9,10 @@ import { UserGuideModal } from './UserGuideModal';
 interface HeaderProps {
     onReset: () => void;
     showReset: boolean;
+    onOpenHistory?: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onReset, showReset }) => {
+export const Header: React.FC<HeaderProps> = ({ onReset, showReset, onOpenHistory }) => {
   const { t, language, changeLanguage } = useTranslation();
   const [googleUser, setGoogleUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
@@ -66,8 +67,8 @@ export const Header: React.FC<HeaderProps> = ({ onReset, showReset }) => {
 
   return (
     <>
-      <header className="bg-white/70 backdrop-blur-xl sticky top-0 z-50 border-b border-slate-200/60 shadow-sm transition-all duration-300">
-        <div className="container mx-auto px-4 py-3 sm:py-4 flex justify-between items-center gap-3">
+      <header className="bg-white/40 backdrop-blur-xl sticky top-0 z-50 border-b border-white/50 shadow-[0_2px_20px_-5px_rgba(15,23,42,0.035)] transition-all duration-300">
+        <div className="w-full max-w-[1720px] mx-auto px-3 sm:px-6 md:px-8 py-3 sm:py-4 flex justify-between items-center gap-3">
           {/* Brand Group */}
           <div className="flex items-center space-x-2.5 group cursor-pointer flex-shrink-0">
             <div className="bg-gradient-to-tr from-sky-500 to-indigo-600 p-1.5 sm:p-2 rounded-xl shadow-md shadow-sky-500/10 group-hover:scale-105 transition-transform duration-300">
@@ -79,12 +80,25 @@ export const Header: React.FC<HeaderProps> = ({ onReset, showReset }) => {
                   {t('appTitle')}
                 </span>
               </h1>
-              <p className="text-[9px] sm:text-[10px] text-slate-400 font-mono tracking-wider uppercase mt-0.5 leading-none">Powered by Gemini AI 3.5</p>
+              <p className="text-[9px] sm:text-[10px] text-slate-400 font-mono tracking-wider uppercase mt-0.5 leading-none">Powered by Gemini AI 3.6 | Dev by Vkhoai</p>
             </div>
           </div>
 
           {/* Controls Group */}
           <div className="flex items-center gap-2.5 sm:gap-3 flex-shrink-0 ml-auto relative" ref={dropdownRef}>
+            {onOpenHistory && (
+              <button 
+                onClick={onOpenHistory}
+                className="text-[10px] sm:text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-100/60 font-extrabold font-display py-1.5 sm:py-2 px-3 sm:px-4 rounded-xl active:scale-95 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 cursor-pointer shadow-sm"
+                title={language === 'vi' ? 'Xem danh sách & lịch sử cuộc họp đã lưu' : 'View saved meeting history'}
+              >
+                <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>{language === 'vi' ? 'Lịch sử' : 'History'}</span>
+              </button>
+            )}
+
             <button 
               onClick={() => setIsGuideOpen(true)}
               className="text-[10px] sm:text-xs bg-sky-50 hover:bg-sky-100 text-sky-600 border border-sky-100/60 font-extrabold font-display py-1.5 sm:py-2 px-3 sm:px-4 rounded-xl active:scale-95 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 cursor-pointer"

@@ -14,7 +14,7 @@ import {
 } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
-import type { AnalysisResult } from '../types';
+import type { AnalysisResult, ActionItem } from '../types';
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
@@ -24,11 +24,14 @@ export const auth = getAuth(app);
 setPersistence(auth, browserLocalPersistence).catch((err) => {
   console.error("Firebase auth setPersistence failed: ", err);
 });
-export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
+const dbId = (firebaseConfig as any).firestoreDatabaseId;
+export const db = dbId ? getFirestore(app, dbId) : getFirestore(app);
 
 const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/gmail.compose');
 provider.addScope('https://www.googleapis.com/auth/drive');
+provider.addScope('https://www.googleapis.com/auth/tasks');
+provider.addScope('https://www.googleapis.com/auth/documents');
 provider.setCustomParameters({
   prompt: 'select_account'
 });
@@ -530,4 +533,99 @@ export const uploadDocxToGoogleDrive = async (
   }
 
   return { id: fileId, webViewLink };
+};
+
+export const syncTaskToGoogleTasks = async (
+  item: ActionItem,
+  meetingTopic?: string
+): Promise<{ id: string }> => {
+  const token = await getAccessToken();
+  if (!token) {
+    throw new Error('TOKEN_REQUIRED');
+  }
+
+  const notesLines = [];
+  if (item.owner) notesLines.push(`👤 Chủ trì: ${item.owner}`);
+  if (item.collaborators) notesLines.push(`👥 Phối hợp: ${item.collaborators}`);
+  if (item.priority) notesLines.push(`🔥 Mức độ: ${item.priority}`);
+  if (meetingTopic) notesLines.push(`📌 Cuộc họp: ${meetingTopic}`);
+  if (item.notes) notesLines.push(`📝 Ghi chú: ${item.notes}`);
+
+  let dueDateIso: string | undefined = undefined;
+  if (item.deadline && item.deadline !== '-' && item.deadline.trim() !== '') {
+    try {
+      const cleaned = item.deadline.trim();
+      const parts = cleaned.split(/[\/\-\.]/);
+      if (parts.length === 3) {
+        let year = parseInt(parts[0]);
+        let month = parseInt(parts[1]);
+        let day = parseInt(parts[2]);
+        if (parts[2].length === 4) {
+          day = parseInt(parts[0]);
+          month = parseInt(parts[1]);
+          year = parseInt(parts[2]);
+        }
+        if (year > 2020 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+          const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+          dueDateIso = d.toISOString();
+        }
+      }
+    } catch {
+      // Ignore date formatting errors
+    }
+  }
+
+  const taskPayload: any = {
+    title: item.task,
+    notes: notesLines.join('\n')
+  };
+
+  if (dueDateIso) {
+    taskPayload.due = dueDateIso;
+  }
+
+  const response = await fetch('https://tasks.googleapis.com/tasks/v1/lists/@default/tasks', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(taskPayload)
+  });
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      cachedAccessToken = null;
+      localStorage.removeItem('google_access_token');
+      throw new Error('TOKEN_EXPIRED');
+    }
+    const errorText = await response.text();
+    console.error('Google Tasks API error:', errorText);
+    throw new Error('FAILED_TO_CREATE_TASK');
+  }
+
+  const data = await response.json();
+  return { id: data.id };
+};
+
+export const syncAllActionItemsToGoogleTasks = async (
+  items: ActionItem[],
+  meetingTopic?: string
+): Promise<{ successCount: number; failedCount: number }> => {
+  let successCount = 0;
+  let failedCount = 0;
+
+  for (const item of items) {
+    try {
+      await syncTaskToGoogleTasks(item, meetingTopic);
+      successCount++;
+    } catch (err: any) {
+      if (err?.message === 'TOKEN_EXPIRED' || err?.message === 'TOKEN_REQUIRED') {
+        throw err;
+      }
+      failedCount++;
+    }
+  }
+
+  return { successCount, failedCount };
 };

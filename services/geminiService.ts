@@ -20,8 +20,94 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, errorMessage = "Timeout
   ]);
 };
 
+export function parseGeminiError(error: any, lang: Language = 'vi'): Error {
+    let errorMsg = '';
+    if (error instanceof Error) {
+        errorMsg = error.message;
+    } else if (typeof error === 'string') {
+        errorMsg = error;
+    } else if (error && typeof error === 'object') {
+        try {
+            errorMsg = JSON.stringify(error);
+        } catch (_) {
+            errorMsg = String(error);
+        }
+    }
+
+    const errorMsgLower = errorMsg.toLowerCase();
+
+    // Check for malformed audio / corrupted input / ffmpeg / avcodec / 400 bad request errors
+    const isMalformedFile = 
+        errorMsgLower.includes('file_error_parsing_malformed_input') ||
+        errorMsgLower.includes('malformed_input') ||
+        errorMsgLower.includes('avcodec_send_packet') ||
+        errorMsgLower.includes('ffmpeg function failed') ||
+        errorMsgLower.includes('invalid_argument') ||
+        errorMsgLower.includes('cannot decode') ||
+        errorMsgLower.includes('unsupported audio') ||
+        errorMsgLower.includes('nda') ||
+        (error && typeof error === 'object' && (error.status === 'INVALID_ARGUMENT' || error.code === 400));
+
+    if (isMalformedFile) {
+        const msg = lang === 'vi'
+            ? '⚠️ PHÁT HIỆN TỆP ÂM THANH BỊ LỖI CẤU TRÚC (MALFORMED FILE ERROR): Tệp âm thanh bị hỏng dữ liệu hoặc không đúng định dạng chuẩn (FFmpeg/Avcodec decode failed). Quá trình phân tích đã TỰ ĐỘNG NGỪNG NGAY LẬP TỨC để bảo vệ tài nguyên và tránh lãng phí API. Vui lòng kiểm tra lại tệp âm thanh, xuất lại định dạng MP3, WAV hoặc M4A chuẩn và thử lại.'
+            : '⚠️ MALFORMED AUDIO FILE DETECTED: The audio file is corrupted or in an invalid format (FFmpeg/Avcodec decode failed). Processing was AUTOMATICALLY STOPPED IMMEDIATELY to preserve API quota. Please check your audio file, re-export in standard MP3, WAV, or M4A format, and try again.';
+        return new Error(msg);
+    }
+
+    // Quota Exceeded / Rate Limit
+    const isQuotaError = 
+        errorMsgLower.includes('quota_exceeded') || 
+        errorMsgLower.includes('quota exceeded') || 
+        errorMsgLower.includes('resource_exhausted') || 
+        errorMsgLower.includes('429') ||
+        errorMsgLower.includes('rate limit');
+
+    if (isQuotaError || errorMsg === 'QUOTA_EXCEEDED') {
+        const msg = lang === 'vi'
+            ? '⚠️ ĐÃ VƯỢT QUÁ GIỚI HẠN API (QUOTA EXCEEDED): Bạn đã vượt quá hạn ngạch sử dụng Gemini API. Quá trình xử lý đã tự động dừng lại để tránh phát sinh thêm lỗi. Vui lòng thử lại sau.'
+            : '⚠️ API QUOTA EXCEEDED: You have exceeded your Gemini API quota limit. Processing was halted to avoid further errors. Please try again later.';
+        return new Error(msg);
+    }
+
+    // Timeout
+    if (errorMsgLower.includes('timeout') || errorMsgLower.includes('took too long')) {
+        const msg = lang === 'vi'
+            ? '⏱️ QUÁ THỜI GIAN XỬ LÝ (TIMEOUT): Quá trình gỡ băng/phân tích mất quá nhiều thời gian. Đã tự động dừng để giải phóng kết nối API. Vui lòng thử lại với tệp âm thanh ngắn hơn.'
+            : '⏱️ PROCESSING TIMEOUT: Audio processing took too long. Automatically stopped to free API connections. Please try again with a shorter file.';
+        return new Error(msg);
+    }
+
+    // Network error
+    if (errorMsgLower.includes('rpc failed') || errorMsgLower.includes('fetch failed') || errorMsgLower.includes('network')) {
+        const msg = lang === 'vi'
+            ? '🌐 LỖI KẾT NỐI MẠNG: Không thể kết nối tới dịch vụ AI do sự cố mạng. Quá trình đã tạm ngừng. Vui lòng thử lại.'
+            : '🌐 NETWORK CONNECTION ERROR: Failed to connect to AI service due to network issue. Process paused. Please try again.';
+        return new Error(msg);
+    }
+
+    // Return original Error if it's already clean
+    if (error instanceof Error && !errorMsg.startsWith('{')) {
+        return error;
+    }
+
+    // Extract JSON message if available
+    let cleanedText = errorMsg;
+    try {
+        const parsed = JSON.parse(errorMsg);
+        if (parsed?.error?.message) {
+            cleanedText = parsed.error.message;
+        }
+    } catch (_) {}
+
+    const genericMsg = lang === 'vi'
+        ? `⚠️ LỖI XỬ LÝ XẢY RA: ${cleanedText}. Đã lập tức ngừng phân tích cuộc họp để bảo vệ hệ thống.`
+        : `⚠️ PROCESSING ERROR: ${cleanedText}. Meeting analysis stopped immediately to protect resources.`;
+    return new Error(genericMsg);
+}
+
 // Exponential Backoff Retrying logic with jitter for Gemini API
-const withRetry = async <T>(fn: () => Promise<T>, retries = 4, initialDelay = 1500): Promise<T> => {
+const withRetry = async <T>(fn: () => Promise<T>, retries = 3, initialDelay = 1500): Promise<T> => {
   try {
     return await withExponentialBackoff(
       fn,
@@ -34,6 +120,18 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 4, initialDelay = 15
         isRetriable: (error: any) => {
           const errorMsg = error instanceof Error ? error.message : String(error);
           const errorMsgLower = errorMsg.toLowerCase();
+
+          // Immediately FAIL-FAST on malformed input or corrupted file errors!
+          const isMalformedFile = 
+            errorMsgLower.includes('file_error_parsing') ||
+            errorMsgLower.includes('malformed_input') ||
+            errorMsgLower.includes('avcodec_send_packet') ||
+            errorMsgLower.includes('invalid_argument') ||
+            errorMsgLower.includes('ffmpeg');
+
+          if (isMalformedFile) {
+            return false; // NEVER retry malformed audio files!
+          }
 
           const isQuotaError = 
             errorMsgLower.includes('429') || 
@@ -66,8 +164,6 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 4, initialDelay = 15
       }
     );
   } catch (error: any) {
-    // If the error still persists after all exponential backoff retries are exhausted,
-    // map rate limit errors to the standard "QUOTA_EXCEEDED" expected by outer catch blocks.
     const errorMsg = error instanceof Error ? error.message : String(error);
     const errorMsgLower = errorMsg.toLowerCase();
     
@@ -148,42 +244,44 @@ const getAnalysisSchema = (lang: Language) => {
         category: "Thể loại/Nhóm của cuộc họp (chọn 1 nhãn phù hợp nhất từ danh sách: 'Project', 'Marketing', 'Technical', 'HR', 'Finance', 'Operations', 'General').",
         overview: "Thông tin tổng quan về cuộc họp.",
         topic: "Chủ đề chính của cuộc họp.",
-        dateTime: "Ngày và giờ của cuộc họp. Nên là '[Chưa xác định]' nếu không được đề cập.",
-        location: "Địa điểm của cuộc họp. Nên là '[Chưa xác định]' nếu không được đề cập.",
-        attendees: "Danh sách người tham dự. Thêm '(Chủ trì)' vào sau tên người chủ trì nếu có thể xác định.",
-        mainObjectives: "1-2 mục tiêu cốt lõi của cuộc họp.",
-        discussionSummary: "Bản tóm tắt định dạng Markdown về các điểm thảo luận chính. Sử dụng '##' cho các chủ đề chính và '*' cho các gạch đầu dòng.",
-        decisions: "Các quyết định quan trọng đã được chốt.",
-        decision: "Quyết định cụ thể đã được đưa ra.",
-        actionItems: "Bảng các nhiệm vụ được giao.",
-        task: "Nhiệm vụ cụ thể cần thực hiện.",
-        owner: "Người chịu trách nhiệm cho nhiệm vụ. Nên là null nếu không được chỉ định.",
-        collaborators: "Những người phối hợp trong nhiệm vụ. Nên là null nếu không được chỉ định.",
-        deadline: "Hạn chót cho nhiệm vụ. Nên là null nếu không được chỉ định.",
-        notes: "Ghi chú bổ sung cho nhiệm vụ. Nên là null nếu không được chỉ định.",
-        pendingIssues: "Các vấn đề chưa được giải quyết hoặc các chủ đề cho cuộc họp tiếp theo.",
-        notesAndReferences: "Các đề xuất, nhận xét đáng chú ý, hoặc các tài liệu/liên kết được đề cập.",
-        tags: "Mảng danh sách các nhãn tag phân loại bổ sung cho cuộc họp. Hãy phân tích bản ghi/nội dung để tự động gắn các nhãn phù hợp nhất (ví dụ: 'Internal', 'Client', 'Technical', 'Urgent', 'Brainstorm', 'Planning', 'Review', 'Marketing', 'Support'...). Trích xuất tối đa 3-4 nhãn."
+        dateTime: "Ngày và giờ của cuộc họp. Nếu không đề cập ghi 'Chưa được cung cấp'.",
+        location: "Địa điểm hoặc hình thức họp. Nếu không đề cập ghi 'Chưa được cung cấp'.",
+        attendees: "Danh sách người tham dự. Thêm '(Chủ trì)' vào sau tên người điều hành.",
+        mainObjectives: "Danh sách 1-3 mục tiêu cốt lõi của cuộc họp.",
+        discussionSummary: "MEMO Cuộc họp chi tiết gồm đúng 13 phần theo chuẩn Thư ký Điều hành Cấp cao (sử dụng Markdown và các Bảng Markdown cho các phần 4, 6, 8, 12).",
+        decisions: "Danh sách các quyết định quan trọng đã chốt.",
+        decision: "Quyết định cụ thể đã được chốt.",
+        actionItems: "Danh sách các công việc được giao trong cuộc họp.",
+        task: "Công việc cần thực hiện.",
+        owner: "Người phụ trách. Nếu chưa rõ ghi 'Cần xác nhận'.",
+        collaborators: "Đơn vị hoặc người phối hợp. Nếu chưa rõ ghi 'Cần xác nhận'.",
+        deadline: "Thời hạn hoàn thành. Nếu chưa rõ ghi 'Cần xác nhận'.",
+        notes: "Ghi chú kết quả đầu ra, tiêu chí hoàn thành, hoặc phụ thuộc.",
+        priority: "Mức độ ưu tiên của công việc: 'Cao', 'Trung bình', hoặc 'Thấp'.",
+        pendingIssues: "Các công việc tồn đọng, rủi ro, hoặc thông tin chưa làm rõ.",
+        notesAndReferences: "Các phụ thuộc, ghi chú tổng quan, hoặc tài liệu dẫn chứng.",
+        tags: "Thẻ phân loại cuộc họp (2-4 thẻ)."
     } : {
-        category: "The category/tag of the meeting. Choose 1 most appropriate from: 'Project', 'Marketing', 'Technical', 'HR', 'Finance', 'Operations', 'General'. Only write one of these category names.",
+        category: "The category/tag of the meeting ('Project', 'Marketing', 'Technical', 'HR', 'Finance', 'Operations', 'General').",
         overview: "Overall information about the meeting.",
         topic: "The main topic of the meeting.",
-        dateTime: "Date and time of the meeting. Should be '[Unspecified]' if not mentioned.",
-        location: "Location of the meeting. Should be '[Unspecified]' if not mentioned.",
-        attendees: "List of attendees. Append '(Host)' to the host's name if identifiable.",
-        mainObjectives: "1-2 core objectives of the meeting.",
-        discussionSummary: "A Markdown-formatted summary of the main discussion points. Use '##' for main topics and '*' for bullet points.",
-        decisions: "Key decisions that were finalized.",
-        decision: "The specific decision made.",
-        actionItems: "Table of assigned tasks.",
-        task: "The specific task to be done.",
-        owner: "Person responsible for the task. Should be null if not specified.",
-        collaborators: "People collaborating on the task. Should be null if not specified.",
-        deadline: "Deadline for the task. Should be null if not specified.",
-        notes: "Additional notes for the task. Should be null if not specified.",
-        pendingIssues: "Unresolved issues or topics for the next meeting.",
-        notesAndReferences: "Notable suggestions, comments, or mentioned documents/links.",
-        tags: "Array of additional category/label tags for the meeting. Analyze the context and assign highly relevant labels (e.g., 'Internal', 'Client', 'Technical', 'Urgent', 'Brainstorm', 'Planning', 'Review', 'Marketing', 'Support'). Up to 3-4 tags."
+        dateTime: "Date and time of the meeting. Write 'Not provided' if missing.",
+        location: "Location or platform. Write 'Not provided' if missing.",
+        attendees: "List of attendees. Append '(Chair)' to the chairperson.",
+        mainObjectives: "List of 1-3 core objectives.",
+        discussionSummary: "Full 13-section Executive Meeting MEMO formatted in Markdown (using Markdown tables for sections 4, 6, 8, 12).",
+        decisions: "List of finalized decisions.",
+        decision: "Specific decision finalized.",
+        actionItems: "List of assigned tasks.",
+        task: "Specific task to execute.",
+        owner: "Owner responsible. Write 'To Be Clarified' if unspecified.",
+        collaborators: "Collaborators or department. Write 'To Be Clarified' if unspecified.",
+        deadline: "Deadline. Write 'To Be Clarified' if unspecified.",
+        notes: "Deliverable criteria, status, or dependencies.",
+        priority: "Priority: 'High', 'Medium', or 'Low'.",
+        pendingIssues: "Pending items, risks, or points needing clarification.",
+        notesAndReferences: "Dependencies, general notes, or referenced materials.",
+        tags: "Assigned tags (2-4 items)."
     };
 
     return {
@@ -221,8 +319,9 @@ const getAnalysisSchema = (lang: Language) => {
                         collaborators: { type: Type.STRING, nullable: true, description: t.collaborators },
                         deadline: { type: Type.STRING, nullable: true, description: t.deadline },
                         notes: { type: Type.STRING, nullable: true, description: t.notes },
+                        priority: { type: Type.STRING, nullable: true, description: t.priority },
                     },
-                    required: ["task", "owner", "collaborators", "deadline", "notes"]
+                    required: ["task", "owner", "collaborators", "deadline", "notes", "priority"]
                 }
             },
             pendingIssues: { type: Type.ARRAY, description: t.pendingIssues, items: { type: Type.STRING } },
@@ -549,7 +648,7 @@ const transcribeAudioChunk = async (base64Data: string, mimeType: string, lang: 
       const response: GenerateContentResponse = await withRetry(() => 
         withTimeout(
           ai.models.generateContent({
-            model: 'gemini-3.5-flash',
+            model: 'gemini-3.6-flash',
             contents: { parts: [audioPart, { text: t.prompt }] },
             config: { 
                 responseMimeType: "application/json",
@@ -581,18 +680,7 @@ const transcribeAudioChunk = async (base64Data: string, mimeType: string, lang: 
         console.error("Error during transcription chunk:", error);
 
         if (error instanceof Error) {
-             if (error.message === "QUOTA_EXCEEDED") {
-                 throw new Error(lang === 'vi' ? "Bạn đã vượt quá giới hạn sử dụng (quota) của Gemini API. Vui lòng kiểm tra lại tài khoản hoặc thử lại sau." : "You have exceeded your Gemini API quota. Please check your account or try again later.");
-             }
-             if (error.message.includes("TIMEOUT:") || error.message.includes("took too long")) {
-                 throw new Error(lang === 'vi'
-                    ? "Quá trình gỡ băng phân đoạn âm thanh mất quá nhiều thời gian. Vui lòng thử lại sau."
-                    : "Transcription of audio chunk took too long. Please try again later.");
-             }
-             if (error.message.includes('Rpc failed') || error.message.includes('fetch failed')) {
-                throw new Error(t.errorNetwork);
-             }
-             const emptyResponseMessages = [
+            const emptyResponseMessages = [
                 'Phản hồi của AI trống hoặc không hợp lệ. Không thể phân tích cú pháp JSON.',
                 'AI response was empty or invalid. Cannot parse JSON.'
             ];
@@ -600,10 +688,9 @@ const transcribeAudioChunk = async (base64Data: string, mimeType: string, lang: 
                 console.warn('Caught an empty response error. Treating as an empty segment.');
                 return [];
             }
-             throw error;
         }
 
-        throw new Error(t.errorGeneric);
+        throw parseGeminiError(error, lang);
     }
 }
 
@@ -635,6 +722,10 @@ async function downsampleAudioBuffer(audioBuffer: AudioBuffer, targetSampleRate 
 
 const geminiService = {
   async transcribeAudio(file: File, lang: Language, onProgress: (progress: { chunk: number, totalChunks: number }) => void, timeOffset: number = 0): Promise<{segments: TranscriptSegment[], duration: number}> {
+    if (!file || file.size === 0) {
+      throw parseGeminiError('FILE_ERROR_PARSING_MALFORMED_INPUT: File is empty or 0 bytes', lang);
+    }
+
     let audioCtx: AudioContext | null = null;
     let audioBuffer: AudioBuffer | null = null;
     let duration = 0;
@@ -768,23 +859,36 @@ const geminiService = {
     // Execute chunk promises with a strict concurrency limit (e.g. 3) to prevent rate limit thundering herds
     const CONCURRENCY_LIMIT = 3;
     const allSegmentsByChunk: TranscriptSegment[][] = new Array(numChunks);
+    let isAborted = false;
+    let abortError: any = null;
     
     const pool = [...chunkPromises.entries()]; 
     const workers = Array(Math.min(CONCURRENCY_LIMIT, pool.length)).fill(null).map(async () => {
-      while (pool.length > 0) {
+      while (pool.length > 0 && !isAborted) {
         const item = pool.shift();
         if (!item) break;
         const [index, task] = item;
         try {
+          if (isAborted) break;
           allSegmentsByChunk[index] = await task();
         } catch (taskError) {
           console.error(`Error processing chunk index ${index}:`, taskError);
-          throw taskError; // Propagate up to stop transcription gracefully rather than freezing
+          isAborted = true; // IMMEDIATELY ABORT ALL REMAINING CHUNKS!
+          pool.length = 0; // Empty the pool so other workers stop instantly!
+          abortError = taskError;
+          throw taskError;
         }
       }
     });
 
-    await Promise.all(workers);
+    try {
+      await Promise.all(workers);
+    } catch (err) {
+      if (audioCtx) {
+        try { await audioCtx.close(); } catch (_) {}
+      }
+      throw parseGeminiError(abortError || err, lang);
+    }
     
     // Flatten segments preserving correct piece order
     let allSegments: TranscriptSegment[] = [];
@@ -813,126 +917,205 @@ ${hint}
 
     if (lang === 'vi') {
         return `
-VAI TRÒ & BỐI CẢNH: Bạn là một Trợ lý Điều hành Cấp cao kiêm Chuyên gia Phân tích Hệ thống (Senior Executive Assistant & Business Analyst). Bạn có khả năng bóc tách, xử lý thông tin đa nghiệp vụ (Kỹ thuật, Kinh doanh, Vận hành, Tài chính, Nhân sự...) và chuyển đổi các bản ghi thoại (transcript) thô, nhiễu thành Biên bản Cuộc họp (Meeting Memo) chuyên nghiệp, có độ chính xác và chi tiết cao.
+Bạn là Thư ký Điều hành cấp cao (Senior Executive Secretary). Hãy đọc/nghe TOÀN BỘ file ghi âm, transcript và tài liệu đính kèm, sau đó lập MEMO cuộc họp chi tiết, rõ ràng, có thể dùng để báo cáo Ban Lãnh đạo và theo dõi công việc sau họp.
 
-NHIỆM VỤ CỦA BẠN: Phân tích toàn bộ bản ghi thô được cung cấp. Lọc bỏ các từ đệm, chuyện phiếm, câu trùng lặp. Trích xuất và cấu trúc lại toàn bộ nội dung một cách ĐẦY ĐỦ, CHI TIẾT, không tóm tắt sơ sài, bám sát 100% sự thật trong văn bản để tạo ra một biên bản sẵn sàng bàn giao cho Ban Giám đốc và các Trưởng bộ phận.
+YÊU CẦU PHÂN TÍCH
+- Không chỉ tóm tắt chung; phải ghi nhận đầy đủ các chủ đề, quan điểm, phản biện, quyết định, việc được giao, việc tồn đọng, khó khăn, rủi ro và hướng xử lý.
+- Loại bỏ lời chào, nội dung ngoài lề và câu nói lặp; không bỏ sót các ý kiến quan trọng dù chỉ được nhắc một lần.
+- Nhóm các nội dung trùng nhau nhưng phải giữ nguyên ý nghĩa và bối cảnh.
+- Phân biệt rõ:
+  1. Nội dung đã chốt.
+  2. Định hướng đã thống nhất.
+  3. Phương án đang xem xét.
+  4. Nội dung chưa thống nhất.
+  5. Nội dung cần bổ sung hoặc xác minh.
+- Chỉ ghi “đã giao việc” khi có phát biểu giao việc rõ ràng.
+- Không tự gán người phụ trách, đơn vị phối hợp, thời hạn, mức ưu tiên, số liệu hoặc quyết định.
+- Không rõ Owner hoặc thời hạn thì ghi “Cần xác nhận”.
+- Không đủ dữ liệu thì ghi “Chưa đủ thông tin để kết luận”.
+- Nội dung suy luận phải ghi “Giả định – cần xác nhận”.
+- Tên người, tên đối tác, thuật ngữ hoặc số liệu nghe không rõ phải đánh dấu “Cần kiểm tra lại theo nguồn gốc”.
+- Nội dung quan trọng nên có timestamp hoặc vị trí nguồn nếu xác định được.
+- Không biến ý kiến đề xuất hoặc phản biện thành kết luận chính thức.
 
-CẤU TRÚC ĐẦU RA BẮT BUỘC TRONG ĐỐI TƯỢNG JSON (Trình bày chuẩn Heading và Numbering để xuất bản):
+CẤU TRÚC ĐẦU RA BẮT BUỘC TRONG TRƯỜNG discussionSummary (TÓM TẮT & NỘI DUNG THẢO LUẬN DẠNG MARKDOWN CÓ BẢNG):
+Trường discussionSummary PHẢI chứa nội dung Markdown trình bày các phần tóm tắt và thảo luận dưới đây. Đối với các phần nội dung trao đổi chi tiết, công việc, khó khăn/rủi ro, BẮT BUỘC DÙNG BẢNG MARKDOWN (| Cột 1 | Cột 2 | ... |):
 
-0. **THỂ LOẠI CUỘC HỌP (category):**
-   - Xác định và điền thể loại phù hợp nhất của cuộc họp từ danh sách chuẩn bằng tiếng Anh: 'Project', 'Marketing', 'Technical', 'HR', 'Finance', 'Operations', 'General'.
+## 1. Tổng quan cuộc họp
+Trình bày bối cảnh, lý do tổ chức, vấn đề cần giải quyết, phạm vi trao đổi và kết quả mong muốn.
 
-1. **THÔNG TIN TỔNG QUAN (overview):**
-   - **topic (Chủ đề cuộc họp):** Tóm tắt bản chất/chủ đề chính của cuộc họp trong 1 câu ngắn gọn, chuyên nghiệp.
-   - **dateTime (Ngày & Giờ):** Trích xuất dạng "DD/MM/YYYY - HH:MM". Nếu không có, ghi "[Chưa xác định]".
-   - **location (Địa điểm/Hình thức):** Trực tiếp tại phòng họp nào hoặc Trực tuyến qua nền tảng nào. Nếu không có, ghi "[Chưa xác định]".
-   - **attendees (Thành phần tham dự):** Liệt kê đầy đủ tên và chức vụ của những người phát biểu/tham gia đóng góp ý kiến. Ghi chú rõ "(Chủ trì)" bên cạnh người điều hành cuộc họp (ví dụ: "Nguyễn Văn A (Chủ trì)").
+## 3. Tóm tắt điều hành
+Tóm tắt đầy đủ nhưng cô đọng:
+- Vấn đề trọng tâm.
+- Các nội dung đã trao đổi.
+- Kết quả chính.
+- Điều đã chốt.
+- Điều chưa chốt.
+- Các việc quan trọng cần xử lý tiếp.
 
-2. **MỤC TIÊU CHIẾN LƯỢC CỦA CUỘC HỌP (mainObjectives):**
-   - Nêu rõ các mục đích cốt lõi và kết quả kỳ vọng của buổi họp từ 1-3 gạch đầu dòng.
+## 4. Nội dung trao đổi chi tiết
+Lập BẢNG MARKDOWN gồm các cột:
+| Chủ đề | Nội dung trình bày | Ý kiến của các bên | Ý kiến phản biện / bất đồng | Phương án được đề xuất | Kết luận / Trạng thái hiện tại |
+Phải phản ánh đầy đủ các quan điểm khác nhau, không chỉ lấy ý kiến cuối cùng.
 
-3. **CHI TIẾT NỘI DUNG THẢO LUẬN & TRANH LUẬN (discussionSummary) - ĐỊNH DẠNG TRÌNH BÀY CHUẨN HÀNH CHÍNH (THEO NGHỊ ĐỊNH 30/2020/NĐ-CP):**
-   - Bắt buộc phân rã chi tiết toàn bộ các chủ đề được thảo luận. Không gộp chung lười biếng.
-   - Tuyệt đối KHÔNG sử dụng ký tự đầu dòng hoang dã như dấu hoa thị `*` hay dấu gạch ngang `-` ở đầu các tiểu mục bàn luận.
-   - Trình bày biên bản họp một cách rành mạch, có quy luật và trình tự của một tờ trình/biên bản hành chính chính thống gửi tới các doanh nghiệp và đối tác lớn. Với mỗi chủ đề, bắt buộc dùng đánh số thứ tự 1., 2., 3. như sau (mỗi mục nằm một đoạn văn riêng biệt, không có dấu hoa thị hay gạch đầu dòng):
-     Chủ đề [Số]: [Tên chủ đề hoặc Vấn đề nghiệp vụ]
-     1. Bối cảnh thực trạng: [Chi tiết về thực trạng, các số liệu thực tế, khó khăn hoặc các mốc cần xử lý].
-     2. Quan điểm và tranh luận từ các bên: [Trình bày rõ ràng luồng ý kiến, đề đạt cụ thể từng bộ phận/thành viên liên quan].
-     3. Diễn biến và giải pháp được chọn: [Cách thức các bên thảo luận, thỏa hiệp và phương án chính thức được chốt cuối cùng bởi người chủ trì].
-   - Quy tắc bổ sung: Bôi đậm các thông tin quan trọng như con số chỉ tiêu, mốc thời gian, quyết định then chốt, nhưng không sử dụng dấu hoa thị ở đầu dòng.
+## 5. Nội dung đã chốt và định hướng đã thống nhất
+Tách riêng:
+- Quyết định đã chốt: ...
+- Định hướng/nguyên tắc đã thống nhất: ...
+- Điều kiện kèm theo: ...
+- Nội dung vẫn cần xác nhận: ...
+(Nếu chưa có quyết định cuối cùng, phải ghi rõ).
 
-4. **CÁC QUYẾT ĐỊNH THEN CHỐT & RÀNG BUỘC ĐÃ CHỐT (decisions):**
-   - Liệt kê dứt khoát các quyết định đã thống nhất thông qua trong mảng decisions. Đây là căn cứ pháp lý để thực thi các bước tiếp theo.
-   - Định dạng chuỗi decision: "Quyết định [Số]: [Nội dung quyết định] - *Phạm vi áp dụng:* [Bộ phận, Dự án hoặc Toàn công ty] - *Yêu cầu đặc biệt:* [Về chi phí, bảo mật, quy trình nếu có]". Mọi quyết định phải rành mạch, có đầy đủ chủ vị.
+## 6. Công việc được giao
+Lập BẢNG MARKDOWN gồm các cột:
+| Mã việc | Công việc cần thực hiện | Kết quả đầu ra mong muốn | Người giao | Owner | Đơn vị phối hợp | Thời hạn | Phụ thuộc | Tiêu chí hoàn thành | Trạng thái |
+Mỗi công việc là một dòng riêng, không gộp nhiều đầu việc khác nhau.
 
-5. **BẢNG PHÂN CÔNG NHIỆM VỤ TOÀN DIỆN (actionItems):**
-   - Thiết lập các nhiệm vụ phân công chi tiết. Tuyệt đối không bỏ sót bất kỳ đầu việc nào được giao trong cuộc họp.
-   - **task (Nhiệm vụ):** Bắt đầu bằng động từ hành động hành vi rõ ràng (ví dụ: "Hoàn thiện kế hoạch...", "Kiểm thử tính năng...").
-   - **owner (Người phụ trách chính):** Tên cụ thể, nếu thiếu thông tin bắt buộc ghi "[Cần làm rõ]".
-   - **collaborators (Người phối hợp/Phòng ban liên quan):** Tên/Bộ phận cụ thể, nếu thiếu thông tin bắt buộc ghi "[Cần làm rõ]".
-   - **deadline (Thời hạn):** Trích xuất ngày cụ thể định dạng "DD/MM/YYYY". Có thể ghi ngày ước lượng kèm dấu "?" ở cuối (ví dụ: "15/10/2026?") dựa trên ngữ cảnh, nếu không rõ ghi "[Cần làm rõ]".
-   - **notes (Kết quả đầu ra & Sự phụ thuộc):** Tích hợp cả hai yêu cầu: "(1) *Tiêu chí nghiệm thu/Kết quả đầu ra:* [Báo cáo hành vi/Dashboard/Tính năng code xong...]; (2) *Ghi chú & Phụ thuộc:* [Việc này cần làm sau khi ai hoàn thành/Rủi ro kỹ thuật cần tránh]".
+## 7. Công việc đang thực hiện và công việc tồn đọng
+Nêu rõ:
+- Việc đang thực hiện: ...
+- Việc chưa hoàn thành & nguyên nhân tồn đọng: ...
+- Ảnh hưởng & điều kiện cần có để xử lý: ...
+- Nội dung cần xác nhận thêm: ...
 
-6. **RỦI RO, ĐIỂM NGHẼN & CÁC VẤN ĐỀ TỒN ĐỌNG (pendingIssues):**
-   - Liệt kê chi tiết trong mảng pendingIssues dưới dạng:
-     - **Rủi ro tiềm ẩn & Điểm nghẽn:** Các nguy cơ về hiệu năng, bảo mật, dòng tiền, nhân sự hoặc xung đột lợi ích giữa các phòng ban được cảnh báo trong cuộc họp.
-     - **Vấn đề tồn đọng chưa giải quyết:** Các câu hỏi, đề xuất chưa được chốt hạ, cần nghiên cứu thêm hoặc chờ dữ liệu từ bên thứ ba.
-     - **Chương trình nghị sự buổi tới (nếu có nhắm tới):** Các nội dung hoãn lại, lịch họp tiếp theo.
+## 8. Khó khăn, điểm nghẽn và rủi ro
+Lập BẢNG MARKDOWN gồm các cột:
+| Khó khăn / Rủi ro | Loại (Hiện tại / Phân loại rủi ro) | Nguyên nhân | Ảnh hưởng | Bộ phận / Công việc bị ảnh hưởng | Hướng xử lý được đề cập | Nội dung chưa có phương án xử lý |
+Phân biệt rõ khó khăn hiện tại với rủi ro có thể xảy ra.
 
-7. **ĐỀ XUẤT SÁNG TẠO & TÀI LIỆU THAM KHẢO (notesAndReferences):**
-   - Liệt kê chi tiết trong mảng notesAndReferences dưới dạng:
-     - **Ý tưởng & Đề xuất đáng chú ý:** Các ý kiến hay, giải pháp đột phá được đề cập nhưng chưa đưa vào kế hoạch hành động ngay do giới hạn nguồn lực.
-     - **Tài liệu/Hệ thống nhắc đến:** Tên các công cụ, phần mềm, báo cáo, luật, hoặc tài liệu số được các bên dẫn chứng trong cuộc họp.
+## 9. Các phụ thuộc
+Tổng hợp các phụ thuộc về: Quyết định của Ban Lãnh đạo, Dữ liệu, Nhân sự, Ngân sách, Quy trình, Hệ thống, Nhà cung cấp, Tài liệu hoặc đơn vị phối hợp.
 
----
-**NGUYÊN TẮC TUÂN THỦ TUYỆT ĐỐI CỦA TRỢ LÝ:**
-1. **TRUNG THỰC VỚI TRANSCRIPT:** Không tự ý bịa đặt hoặc thêm thắt thông tin nằm ngoài văn bản đầu vào. Thà để trống và ghi "[Cần làm rõ]" chứ không tự đoán ý người nói.
-2. **XỬ LÝ LỖI NGỮ CẢNH ĐA NGHIỆP VỤ:** Tự động chuẩn hóa các từ viết sai chính tả hoặc phát âm do AI nhận diện sai (Ví dụ: "sa lary" -> "Lương/Salary", "bê rôn" -> "Payroll", "kê toán" -> "Kế toán", "api" -> "API", "misa" -> "MISA").
-3. **BẢO TOÀN DIỄN BIẾN:** Nếu có sự thay đổi quyết định (quay xe) giữa đầu và cuối cuộc họp, bắt buộc phải làm rõ tiến trình đó ở Phần Thảo luận (discussionSummary) và chỉ ghi kết quả cuối cùng ở phần Quyết định (decisions).
-4. **NGÔN NGỮ ĐẦU RA:** TOÀN BỘ Biên bản cuộc họp phải được ghi nhận và trả về hoàn toàn bằng **TIẾNG VIỆT** chuyên nghiệp cao cấp nhất dành cho Ban Giám đốc.
+## 10. Nội dung cần làm rõ
+Liệt kê: Các vấn đề chưa thống nhất, Các câu hỏi chưa được trả lời, Thông tin cần xác minh, Tài liệu còn thiếu, Nội dung cần nhà cung cấp phản hồi, Nội dung cần Ban Lãnh đạo quyết định.
+
+## 11. Ghi chú tổng quan
+Nêu các điểm được nhấn mạnh nhiều lần, cảnh báo quan trọng, thay đổi quan điểm, nội dung dễ bị hiểu sai và điều kiện cần có trước khi chuyển sang bước tiếp theo.
+
+## 12. Next Actions
+Lập BẢNG MARKDOWN gồm các cột:
+| STT | Việc cần làm | Kết quả đầu ra | Owner | Thời hạn | Phụ thuộc | Điều kiện hoàn thành |
+
+## 13. Kết luận điều hành
+Viết đoạn kết luận ngắn để báo cáo cấp trên, thể hiện:
+- Trạng thái hiện tại.
+- Điều đã thống nhất.
+- Điều chưa thống nhất.
+- Việc cần xử lý tiếp.
+- Nội dung cần xin ý kiến hoặc phê duyệt.
+BẮT BUỘC KẾT THÚC BẰNG MỘT TRONG CÁC TRẠNG THÁI CHÍNH THỨC:
+- **Trạng thái:** [Đủ cơ sở triển khai] / [Đủ cơ sở trình phê duyệt] / [Cần bổ sung thông tin trước khi trình] / [Chưa đủ thông tin để kết luận]
+
+YÊU CẦU TRÌNH BÀY
+- Báo cáo phải chi tiết, nhưng không lặp lại transcript từng câu.
+- Ưu tiên bảng biểu, câu ngắn và rõ ý.
+- Người không tham dự cuộc họp phải đọc hiểu được toàn bộ bối cảnh, kết quả và việc cần làm.
+- Trước khi hoàn tất, tự kiểm tra xem có bỏ sót quyết định, việc được giao, việc tồn đọng, khó khăn, rủi ro, phụ thuộc hoặc nội dung cần xác minh hay không.
+
+ĐỒNG THỜI, TRÍCH XUẤT ĐỒNG BỘ CÁC TRƯỜNG DẠNG STRUCTURED JSON:
+- category: 'Project' | 'Marketing' | 'Technical' | 'HR' | 'Finance' | 'Operations' | 'General'
+- tags: Array từ 2-4 tag phân loại
+- overview: { topic, dateTime, location, attendees }
+- mainObjectives: Array 1-3 mục tiêu cốt lõi
+- decisions: Array các quyết định đã chốt trong cuộc họp ({ decision: "Quyết định..." })
+- actionItems: Array các công việc được giao ({ task, owner, collaborators, deadline, notes, priority })
+- pendingIssues: Array các việc tồn đọng, rủi ro, thông tin cần làm rõ
+- notesAndReferences: Array ghi chú tổng quan, phụ thuộc và tài liệu
 
 ${hintSection}
 `;
     }
 
     return `
-ROLE & CONTEXT: You are a Senior Executive Assistant & Business Analyst. You possess the ability to dissect and process multi-disciplinary business information (Technical, Business, Operations, Finance, HR...) and transform raw, noisy, or fragmented voice transcripts into highly accurate, detailed, and professional Meeting Minutes (Meeting Memo) suitable for the Executive Board and Department Heads.
+You are a Senior Executive Secretary. Please read/listen to the ENTIRE audio recording, transcript, and attached documents, then prepare a detailed, clear Meeting MEMO suitable for reporting to the Executive Board and tracking post-meeting tasks.
 
-YOUR MISSION: Analyze the entire raw transcript provided. Filter out filler words, small talk, and repetitive statements. Extract and restructure the entire content in a FULL, DETAILED manner without brief or lazy summaries, adhering 100% to the facts in the text to generate minutes ready to be handed over to the Board of Directors and Department Heads.
+ANALYSIS REQUIREMENTS
+- Do not just summarize generally; fully document all topics, viewpoints, counterarguments, decisions, assigned tasks, pending items, difficulties, risks, and proposed solutions.
+- Remove greetings, off-topic remarks, and repetitive phrases; do not omit important opinions even if mentioned only once.
+- Group duplicate points while preserving original context and meaning.
+- Clearly distinguish:
+  1. Finalized decisions.
+  2. Agreed directions.
+  3. Options under consideration.
+  4. Unaligned/Unresolved items.
+  5. Items needing additions or verification.
+- Only log assigned tasks when explicit assignment statements are made.
+- Do not invent/hallucinate owners, collaborating units, deadlines, priorities, figures, or decisions.
+- Unclear Owner or Deadline must be logged as "To Be Clarified".
+- Insufficient data must be logged as "Insufficient information to conclude".
+- Inferred points must be marked as "Assumption – Needs Confirmation".
+- Unclear names, partner names, terms, or figures must be marked as "Needs verification from original source".
+- Important content should include timestamps or source locations if identifiable.
+- Do not turn proposed opinions or counterarguments into official conclusions.
 
-OUTPUT EXPECTATIONS IN THE JSON OBJECT (Structured with standard formatting for publication):
+REQUIRED OUTPUT STRUCTURE FOR discussionSummary (MARKDOWN DISCUSSION SUMMARY WITH TABLES):
+The discussionSummary field MUST contain the full Markdown text for the discussion sections below. For detailed discussion points, action items, risks, MANDATORILY USE MARKDOWN TABLES (| Col 1 | Col 2 | ... |):
 
-0. **MEETING CATEGORY (category):**
-   - Identify active meeting category from: 'Project', 'Marketing', 'Technical', 'HR', 'Finance', 'Operations', 'General'. Must match one of these items exactly.
+## 1. Meeting Overview
+Context, rationale, problem to solve, scope of discussion, and expected outcomes.
 
-1. **OVERVIEW (overview):**
-   - **topic (Meeting Topic):** Summarize the true essence/core topic of the meeting in 1 concise, highly professional sentence.
-   - **dateTime (Date & Time):** Extract with format "DD/MM/YYYY - HH:MM". If not available, write "[Unspecified]".
-   - **location (Venue/Platform):** Direct meeting room or online platform. If not available, write "[Unspecified]".
-   - **attendees (Attendees Component):** List names and roles of speakers or actively contributing members. Note "(Host)" or "(Chairperson)" next to the moderator if identifiable from context.
+## 3. Executive Summary
+Comprehensive yet concise summary: Core problem, discussed topics, key outcomes, finalized points, unresolved points, and critical next steps.
 
-2. **STRATEGIC MEETINGS OBJECTIVES (mainObjectives):**
-   - Detail the core objectives and expected outcomes of this meeting in 1 to 3 solid bullet points.
+## 4. Detailed Discussion Points
+Formulate a MARKDOWN TABLE with columns:
+| Topic | Presentation Content | Perspectives | Counterarguments / Disagreements | Proposed Options | Conclusion / Current Status |
+Must reflect all different viewpoints, not just the final opinion.
 
-3. **DETAILED DISCUSSION SUMMARY & ROADMAP (discussionSummary) - STREAMLINED OFFICIAL ADMINISTRATIVE DOCUMENT FORMAT:**
-   - Must completely dissect and analyze each discussion theme. Avoid lazy generalization.
-   - Absolutely DO NOT use wild bullet points, list items, asterisks (`*`), or dashes (`-`) at the beginning of sub-sections.
-   - Present with a beautiful structured sequence, resembling an official administrative report or proposal sent to prominent corporate clients and stakeholders. For every major topic discussed, format strictly with the following numbered sequence (each on its own separate line without list bullets):
-     Topic [Number]: [Topic Name or Operational Issue]
-     1. Operational Context: [Details about the context, data patterns, bugs, issues, or status raised at the beginning].
-     2. Arguments & Departmental Perspectives: [Detailed arguments, concerns, or proposals voiced by specific individuals/departments].
-     3. Dynamics & Agreed Resolution: [The compromise progress or finalized solution decided by the host].
-   - Rule: Bold important facts like key metrics, deadlines, critical decisions, or strategic terms, but never put list bullets at the beginning of paragraph lines.
+## 5. Finalized Decisions & Agreed Directions
+Separate bullet points:
+- Finalized decisions: ...
+- Agreed directions/principles: ...
+- Accompanying conditions: ...
+- Points still needing confirmation: ...
+(If no final decision, state clearly).
 
-4. **KEY DECISIONS & AGREED COMMITMENTS (decisions):**
-   - Extract firm, finalized agreements voted or approved.
-   - Format each decision string: "Decision [Number]: [Decision Details] - *Scope of Impact:* [Department, Project, or Company-wide] - *Special Requirement:* [Budget caps, security clearances, or process changes, if any]". All items must have proper subject-object syntax.
+## 6. Assigned Tasks
+Formulate a MARKDOWN TABLE with columns:
+| Task ID | Task Description | Expected Output | Assigner | Owner | Collaborating Unit | Deadline | Dependencies | Completion Criteria | Status |
+Each task must be a separate row.
 
-5. **COMPREHENSIVE ACTION PLAN (actionItems):**
-   - Formulate task delegations ensuring absolutely no assignments from the conversation are missed.
-   - **task (Action Item):** Must begin with a strong, actionable verb (e.g., "Finalize business plan...", "Deploy security patches...").
-   - **owner (Primary Owner):** Specific name, fallback to "[To Be Clarified]" if missing from text.
-   - **collaborators (Collaborators / Departments):** Collaborative peers/teams, fallback to "[To Be Clarified]" if missing.
-   - **deadline (Deadline):** Exact ISO date "DD/MM/YYYY" or smart context estimates followed by "?" (e.g., "15/10/2026?"). If impossible to predict, use "[To Be Clarified]".
-   - **notes (Deliverables & Dependencies):** Combine: "(1) *Deliverable/Acceptance Criteria:* [File/Dashboard/Coded feature...]; (2) *Technical Notes & Dependencies:* [Prerequisite tasks done by other owners / Critical risks to bypass]".
+## 7. Ongoing Work & Pending Tasks
+Detail: Ongoing tasks, incomplete tasks & root causes, impact & required conditions, and additional confirmation needs.
 
-6. **RISKS, PENETRATION BARRIERS & PENDING TOPICS (pendingIssues):**
-   - Capture in the pendingIssues array:
-     - **Potential Risks & Roadblocks:** Risks about performance, security, cash flow, staffing, or departmental friction pointed out in the meeting.
-     - **Unresolved Disputes:** Postponed questions, suggestions without alignment, or awaiting third-party updates.
-     - **Next Meeting Agenda:** Postponed agenda items, scheduled follow-ups.
+## 8. Difficulties, Bottlenecks & Risks
+Formulate a MARKDOWN TABLE with columns:
+| Difficulty / Risk | Type (Current / Risk Category) | Cause | Impact | Affected Department / Task | Mentioned Solution | Items Without Solution |
+Differentiate current difficulties from potential risks.
 
-7. **CREATIVE SUGGESTIONS & REFERENCE ARTIFACTS (notesAndReferences):**
-   - Capture in the notesAndReferences array:
-     - **Notable Out-of-Scope Ideas:** Smart ideas or game-changing brainstorms mentioned but deferred due to resource constraints.
-     - **References & Documentations:** Named software systems, regulations, codes, visual reports, or assets referenced in arguments.
+## 9. Dependencies
+Synthesize dependencies regarding: Executive decisions, Data, Staffing, Budget, Processes, Systems, Vendors, Documents, or Collaborating units.
 
----
-**ABSOLUTE SYSTEM CONSTRAINTS FOR THE SECRETARY:**
-1. **TRANSCRIPT FIDELITY:** Never hallucinate or inject facts not mentioned in the text. Prefer "[To Be Clarified]" rather than guessing intent.
-2. **CONTEXT ERROR CORRECTION:** Automatically normalize voice recognition spelling typos or acoustic glitches (e.g., "sa lary" -> "Salary", "bê rôn" -> "Payroll", "kê toán" -> "Accounting", "api" -> "API").
-3. **PRESERVE SHIFTS:** If participants changed decisions halfway through, document the dialogue flow in the Discussion (discussionSummary) and record only the final official outcome in Decisions (decisions).
-4. **OUTPUT LANGUAGE:** The entire output JSON object MUST be written in highly professional, executive-grade corporate ENGLISH.
+## 10. Items Needing Clarification
+List: Unresolved issues, unanswered questions, information to verify, missing documents, vendor feedback needed, executive decisions required.
+
+## 11. General Notes
+Repeatedly emphasized points, critical warnings, shifts in perspective, easily misunderstood content, and prerequisite conditions before next steps.
+
+## 12. Next Actions
+Formulate a MARKDOWN TABLE with columns:
+| No. | Action Required | Expected Output | Owner | Deadline | Dependencies | Completion Condition |
+
+## 13. Executive Conclusion
+Short conclusion for executive reporting showing: Current status, agreed items, unaligned items, next steps to handle, items needing approval.
+MUST END WITH ONE OF THE OFFICIAL STATUS STATES:
+- **Status:** [Ready for Deployment] / [Ready for Executive Approval] / [Requires Additional Info Before Submission] / [Insufficient Information to Conclude]
+
+PRESENTATION REQUIREMENTS
+- Detailed, but avoid line-by-line transcript repetition.
+- Prioritize tables, concise sentences, and clear logic.
+- Anyone who did not attend must be able to understand the full context, results, and action items.
+- Self-check before finalizing to ensure no omitted decisions, assigned tasks, pending items, risks, dependencies, or points to verify.
+
+SYNCHRONOUSLY EXTRACT STRUCTURED JSON FIELDS:
+- category: 'Project' | 'Marketing' | 'Technical' | 'HR' | 'Finance' | 'Operations' | 'General'
+- tags: Array of 2-4 tags
+- overview: { topic, dateTime, location, attendees }
+- mainObjectives: Array of 1-3 core objectives
+- decisions: Array of finalized decisions ({ decision: "..." })
+- actionItems: Array of assigned tasks ({ task, owner, collaborators, deadline, notes, priority })
+- pendingIssues: Array of pending items, risks, points needing clarification
+- notesAndReferences: Array of general notes, dependencies, and reference materials
 
 ${hintSection}
 `;
@@ -976,7 +1159,7 @@ ${transcript}
       const response: GenerateContentResponse = await withRetry(() => 
         withTimeout(
           ai.models.generateContent({
-            model: 'gemini-3.5-flash',
+            model: 'gemini-3.6-flash',
             contents: t.prompt,
             config: {
               responseMimeType: "application/json",
@@ -993,21 +1176,7 @@ ${transcript}
       return extractAndParseJson<AnalysisResult>(response.text, 'object', lang);
     } catch (error) {
       console.error("Error during analysis:", error);
-       if (error instanceof Error) {
-           if (error.message === "QUOTA_EXCEEDED") {
-               throw new Error(lang === 'vi' ? "Bạn đã vượt quá giới hạn sử dụng (quota) của Gemini API. Vui lòng kiểm tra lại tài khoản hoặc thử lại sau." : "You have exceeded your Gemini API quota. Please check your account or try again later.");
-           }
-           if (error.message.includes("TIMEOUT:") || error.message.includes("took too long")) {
-               throw new Error(lang === 'vi' 
-                   ? "Mất quá nhiều thời gian để AI phản hồi. Vui lòng thử lại với một bản ghi ngắn hơn hoặc cung cấp ít gợi ý hơn."
-                   : "AI response took too long. Please try again with a shorter transcript or fewer hints.");
-           }
-           if (error.message.includes('Rpc failed') || error.message.includes('fetch failed')) {
-               throw new Error(t.errorNetwork);
-           }
-           throw error;
-       }
-      throw new Error(t.errorGeneric);
+      throw parseGeminiError(error, lang);
     }
   },
 
@@ -1078,7 +1247,7 @@ Hãy tổng hợp tất cả các buổi họp này dựa trên schema được 
       const response: GenerateContentResponse = await withRetry(() => 
         withTimeout(
           ai.models.generateContent({
-            model: 'gemini-3.5-flash',
+            model: 'gemini-3.6-flash',
             contents: prompt,
             config: {
               responseMimeType: "application/json",
@@ -1095,18 +1264,51 @@ Hãy tổng hợp tất cả các buổi họp này dựa trên schema được 
       return extractAndParseJson<AnalysisResult>(response.text, 'object', lang);
     } catch (error) {
       console.error("Error during meeting merge:", error);
-      if (error instanceof Error) {
-          if (error.message === "QUOTA_EXCEEDED") {
-              throw new Error(lang === 'vi' ? "Bạn đã vượt quá giới hạn sử dụng (quota) của Gemini API. Vui lòng kiểm tra lại tài khoản hoặc thử lại sau." : "You have exceeded your Gemini API quota. Please check your account or try again later.");
-          }
-          if (error.message.includes("TIMEOUT:") || error.message.includes("took too long")) {
-              throw new Error(lang === 'vi' 
-                  ? "Mất quá nhiều thời gian để AI phản hồi khi gộp báo cáo. Vui lòng thử lại với ít tài liệu hơn hoặc bớt gợi ý."
-                  : "AI response took too long while merging reports. Please try again with fewer meetings or shorter details.");
-          }
-          throw error;
-      }
-      throw new Error(lang === 'vi' ? "Không thể gộp báo cáo do lỗi không xác định từ dịch vụ AI." : "Could not merge due to an unknown AI service error.");
+      throw parseGeminiError(error, lang);
+    }
+  },
+
+  async generateSuggestedTitle(content: string, lang: Language): Promise<string> {
+    const systemPrompt = (lang === 'vi') ? `
+Bạn là một Trợ lý AI chuyên nghiệp. Hãy đọc nội dung tóm tắt buổi họp hoặc cuộc thảo luận dưới đây và tạo ra duy nhất một dòng tiêu đề gợi ý thông minh, ngắn gọn, súc tích, chuyên nghiệp và có ý nghĩa nhất cho cuộc họp đó để lưu vào cơ sở dữ liệu.
+Quy tắc:
+1. KHÔNG thêm bất kỳ từ ngữ thừa nào khác như "Tiêu đề gợi ý:", "Tiêu đề:", hoặc dấu ngoặc kép.
+2. Tiêu đề nên khoảng từ 4 đến 10 từ.
+3. Ngôn ngữ: TIẾNG VIỆT chuyên nghiệp.
+` : `
+You are a professional AI Assistant. Read the meeting summary or transcript below and generate exactly one line of a smart, concise, professional, and meaningful suggested title/topic for that meeting to save in the database.
+Rules:
+1. DO NOT add any extra labels like "Suggested Title:", "Title:", or surrounding quotes.
+2. The title should be around 4 to 10 words.
+3. Language: English.
+`;
+
+    try {
+      const response: GenerateContentResponse = await withRetry(() => 
+        withTimeout(
+          ai.models.generateContent({
+            model: 'gemini-3.6-flash',
+            contents: content,
+            config: {
+              systemInstruction: systemPrompt,
+              temperature: 0.7,
+            },
+          }),
+          30000,
+          "TIMEOUT: AI response took too long while generating suggested title."
+        ),
+        2,
+        1000
+      );
+      
+      let title = response.text ? response.text.trim() : '';
+      title = title.replace(/^#+\s*/g, '');
+      title = title.replace(/^["'“‘](.*)["'”’]$/g, '$1');
+      title = title.replace(/^(Tiêu đề gợi ý|Tiêu đề|Suggested Title|Title):\s*/i, '');
+      return title.trim();
+    } catch (error) {
+      console.error("Error generating suggested title:", error);
+      return lang === 'vi' ? 'Biên bản cuộc họp mới' : 'New Meeting Minutes';
     }
   },
 
@@ -1114,7 +1316,7 @@ Hãy tổng hợp tất cả các buổi họp này dựa trên schema được 
     try {
       const response = await withRetry(() => 
         ai.models.generateContent({
-          model: 'gemini-3.5-flash',
+          model: 'gemini-3.6-flash',
           contents: 'ping',
         }),
         2,

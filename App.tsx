@@ -3,7 +3,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { FileUpload } from './components/FileUpload';
 import { Loader } from './components/Loader';
 import { AnalysisView } from './components/AnalysisView';
-import { geminiService } from './services/geminiService';
+import { geminiService, parseGeminiError } from './services/geminiService';
 import type { AnalysisResult, TranscriptSegment } from './types';
 import { Header } from './components/Header';
 import { ErrorDisplay } from './components/ErrorDisplay';
@@ -36,6 +36,7 @@ export default function App(): React.ReactNode {
   const [activeMeetingAudioName, setActiveMeetingAudioName] = useState<string | null>(null);
   const [refreshHistoryTrigger, setRefreshHistoryTrigger] = useState<number>(0);
   const [isAutoMergeSelected, setIsAutoMergeSelected] = useState<boolean>(true);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState<boolean>(false);
 
   useEffect(() => {
     const unsubscribe = initAuth(
@@ -132,20 +133,22 @@ export default function App(): React.ReactNode {
         const segmentAnalysis = await geminiService.analyzeTranscript(segmentTranscriptText, language, analysisHint);
 
         // 3. Save current segment as its own historic meeting item
-        if (currentUser) {
-          const subMeetingId = 'm_sub_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now();
+        const subMeetingId = 'm_sub_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now();
+        try {
           await saveMeeting(subMeetingId, language, segmentAnalysis, result.segments, file.name);
-          
-          const virtualDoc = {
-            id: subMeetingId,
-            createdAt: new Date().toISOString(),
-            language,
-            transcript: result.segments,
-            result: segmentAnalysis,
-            audioFileName: file.name
-          };
-          generatedMeetings.push(virtualDoc);
+        } catch (saveErr) {
+          console.warn("Auto-save sub-meeting failed:", saveErr);
         }
+        
+        const virtualDoc = {
+          id: subMeetingId,
+          createdAt: new Date().toISOString(),
+          language,
+          transcript: result.segments,
+          result: segmentAnalysis,
+          audioFileName: file.name
+        };
+        generatedMeetings.push(virtualDoc);
         
         consolidatedSegments = consolidatedSegments.concat(result.segments);
       }
@@ -168,16 +171,18 @@ export default function App(): React.ReactNode {
 
         const mergedResult = await geminiService.mergeMeetingSummaries(meetingsPayload, language, '');
 
-        if (currentUser) {
-          const mergeId = 'm_merged_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now();
-          const label = language === 'vi'
-            ? `Báo cáo tổng hợp (${generatedMeetings.length} phần)`
-            : `Synthesized report (${generatedMeetings.length} parts)`;
+        const mergeId = 'm_merged_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now();
+        const label = language === 'vi'
+          ? `Báo cáo tổng hợp (${generatedMeetings.length} phần)`
+          : `Synthesized report (${generatedMeetings.length} parts)`;
 
+        try {
           await saveMeeting(mergeId, language, mergedResult, consolidatedSegments, label);
-          setActiveMeetingId(mergeId);
-          setActiveMeetingAudioName(label);
+        } catch (saveErr) {
+          console.warn("Auto-save merged meeting failed:", saveErr);
         }
+        setActiveMeetingId(mergeId);
+        setActiveMeetingAudioName(label);
 
         setAnalysisResult(mergedResult);
         setTranscript(consolidatedSegments);
@@ -196,8 +201,9 @@ export default function App(): React.ReactNode {
 
       setFiles([]);
     } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : (language === 'vi' ? 'Lỗi xử lý hàng loạt.' : 'Error during batch processing.'));
+      console.error("Batch processing error caught:", err);
+      const parsedErr = parseGeminiError(err, language);
+      setError(parsedErr.message);
     } finally {
       setIsLoading(false);
       setProgressPercent(null);
@@ -231,20 +237,19 @@ export default function App(): React.ReactNode {
       const result = await geminiService.analyzeTranscript(fullTranscriptText, language, analysisHint);
       setAnalysisResult(result);
 
-      if (currentUser) {
-        const meetingId = activeMeetingId || ('m_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now());
-        const audioName = files[0]?.name || activeMeetingAudioName || null;
-        try {
-          await saveMeeting(meetingId, language, result, transcript, audioName);
-          setActiveMeetingId(meetingId);
-          setRefreshHistoryTrigger(prev => prev + 1);
-        } catch (saveError) {
-          console.error("Auto-save analysis to Firestore failed:", saveError);
-        }
+      const meetingId = activeMeetingId || ('m_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now());
+      const audioName = files[0]?.name || activeMeetingAudioName || null;
+      try {
+        await saveMeeting(meetingId, language, result, transcript, audioName);
+        setActiveMeetingId(meetingId);
+        setRefreshHistoryTrigger(prev => prev + 1);
+      } catch (saveError) {
+        console.error("Auto-save analysis failed:", saveError);
       }
     } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : t('analysisGenericError'));
+      console.error("Analysis error caught:", err);
+      const parsedErr = parseGeminiError(err, language);
+      setError(parsedErr.message);
     } finally {
       if (progressInterval) clearInterval(progressInterval);
       setProgressPercent(null);
@@ -254,16 +259,16 @@ export default function App(): React.ReactNode {
 
   const handleUpdateResult = useCallback(async (updated: AnalysisResult) => {
     setAnalysisResult(updated);
-    if (currentUser && activeMeetingId) {
+    if (activeMeetingId) {
       const audioName = files[0]?.name || activeMeetingAudioName || null;
       try {
         await saveMeeting(activeMeetingId, language, updated, transcript || [], audioName);
         setRefreshHistoryTrigger(prev => prev + 1);
       } catch (saveError) {
-        console.error("Auto-save updated analysis to Firestore failed:", saveError);
+        console.error("Auto-save updated analysis failed:", saveError);
       }
     }
-  }, [currentUser, activeMeetingId, files, activeMeetingAudioName, language, transcript]);
+  }, [activeMeetingId, files, activeMeetingAudioName, language, transcript]);
 
   const handleReset = (): void => {
     setFiles([]);
@@ -529,22 +534,84 @@ export default function App(): React.ReactNode {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
-      <Header onReset={handleReset} showReset={files.length > 0 || !!analysisResult} />
-      <main className="container mx-auto px-4 py-8">
-        {isLoading && <Loader message={loadingMessage} progress={progressPercent} />}
+    <div className="min-h-screen relative overflow-hidden bg-gradient-to-tr from-[#f1f5f9] via-[#f0f9ff] to-[#eef2ff] text-slate-800 font-sans">
+      {/* Premium Liquid Glass Backdrop Glowing Blobs */}
+      <div className="absolute top-[10%] left-[-15%] w-[600px] h-[600px] bg-gradient-to-tr from-sky-450/15 to-indigo-350/15 rounded-full blur-[110px] pointer-events-none animate-pulse" style={{ animationDuration: '8s' }} />
+      <div className="absolute top-[50%] right-[-15%] w-[700px] h-[700px] bg-gradient-to-tr from-rose-300/12 to-indigo-400/12 rounded-full blur-[130px] pointer-events-none animate-pulse" style={{ animationDuration: '14s' }} />
+      <div className="absolute bottom-[-10%] left-[20%] w-[500px] h-[500px] bg-gradient-to-tr from-emerald-300/10 to-sky-450/10 rounded-full blur-[100px] pointer-events-none animate-pulse" style={{ animationDuration: '11s' }} />
+      
+      <div className="relative z-10 flex flex-col min-h-screen">
+        <Header 
+          onReset={handleReset} 
+          showReset={files.length > 0 || !!analysisResult} 
+          onOpenHistory={() => setIsHistoryModalOpen(true)}
+        />
+        <main className="w-full max-w-[1720px] mx-auto px-3 sm:px-6 md:px-8 py-6 flex-1 relative z-10">
+          {isLoading && <Loader message={loadingMessage} progress={progressPercent} totalSize={files.length > 0 ? files.reduce((acc, f) => acc + f.size, 0) : null} />}
 
-        {!isLoading && error && <ErrorDisplay message={error} onClear={() => setError(null)} />}
-        
-        {!isLoading && !error && (
-          <div className={`${transcript && !isFocusMode ? 'max-w-7xl' : 'max-w-5xl'} mx-auto transition-all duration-300`}>
-            <ErrorBoundary onReset={handleReset}>
-              {renderContent()}
-            </ErrorBoundary>
+          {!isLoading && error && <ErrorDisplay message={error} onClear={() => setError(null)} />}
+          
+          {!isLoading && !error && (
+            <div className="w-full transition-all duration-300">
+              <ErrorBoundary onReset={handleReset}>
+                {renderContent()}
+              </ErrorBoundary>
+            </div>
+          )}
+        </main>
+        <SystemDiagnostics />
+      </div>
+
+      {/* History Slide-Over Drawer Modal */}
+      {isHistoryModalOpen && (
+        <div className="fixed inset-0 z-[150] flex justify-end bg-slate-900/40 backdrop-blur-sm transition-all duration-300">
+          <div className="w-full max-w-2xl bg-slate-50/95 backdrop-blur-2xl h-full shadow-2xl flex flex-col overflow-hidden border-l border-white/60 animate-in slide-in-from-right duration-300">
+            {/* Drawer Header */}
+            <div className="p-4 sm:p-5 bg-white/80 backdrop-blur-md border-b border-slate-200/80 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl border border-indigo-100/80">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-slate-900 font-display">
+                    {language === 'vi' ? 'Lịch sử cuộc họp & Phiên bản' : 'Meeting & Version History'}
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    {language === 'vi' ? 'Danh sách các biên bản cuộc họp đã được lưu trên tài khoản của bạn' : 'List of saved meeting reports synced with your account'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsHistoryModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all cursor-pointer"
+                title={language === 'vi' ? 'Đóng' : 'Close'}
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Drawer Content Body */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+              <MeetingHistory 
+                onSelectMeeting={(meeting) => {
+                  handleSelectHistoricalMeeting(meeting);
+                  setIsHistoryModalOpen(false);
+                }}
+                selectedId={activeMeetingId}
+                refreshTrigger={refreshHistoryTrigger}
+                onMergeMeetings={async (meetings, instruction) => {
+                  await handleMergeMeetings(meetings, instruction);
+                  setIsHistoryModalOpen(false);
+                }}
+              />
+            </div>
           </div>
-        )}
-      </main>
-      <SystemDiagnostics />
+        </div>
+      )}
     </div>
   );
 }

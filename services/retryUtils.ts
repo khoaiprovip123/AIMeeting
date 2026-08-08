@@ -56,9 +56,14 @@ export async function withExponentialBackoff<T>(
         (errorMsgLower.includes('permission-denied') || errorMsgLower.includes('insufficient permissions')) && 
         !errorMsgLower.includes('quota') && !errorMsgLower.includes('resource');
 
-      // Schema mismatch or explicit usage errors should also fail-fast
+      // Schema mismatch, malformed file input, or explicit usage errors should also fail-fast immediately
       const isUsageError = 
         errorMsgLower.includes('invalid-argument') ||
+        errorMsgLower.includes('invalid_argument') ||
+        errorMsgLower.includes('file_error_parsing') ||
+        errorMsgLower.includes('malformed_input') ||
+        errorMsgLower.includes('avcodec_send_packet') ||
+        errorMsgLower.includes('ffmpeg') ||
         errorMsgLower.includes('must be logged in');
 
       if (isUnretriable || isUsageError) {

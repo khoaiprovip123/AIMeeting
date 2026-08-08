@@ -46,10 +46,10 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect }) => {
 
   return (
     <div
-      className={`mt-4 border-2 border-dashed rounded-3xl p-6 sm:p-12 text-center transition-all duration-500 relative overflow-hidden custom-shadow-lg
+      className={`mt-4 border-2 border-dashed rounded-[32px] p-6 sm:p-12 text-center transition-all duration-500 relative overflow-hidden shadow-[inset_0_2px_4px_rgba(255,255,255,0.85),_0_20px_40px_-15px_rgba(148,163,184,0.18)]
         ${isDragging 
           ? 'border-sky-500 bg-sky-50/70 scale-[1.01] animate-pulseGlow' 
-          : 'border-slate-300/80 hover:border-sky-400/80 bg-white/70 backdrop-blur-md'}`}
+          : 'border-white/60 hover:border-white/90 bg-white/45 backdrop-blur-xl'}`}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}

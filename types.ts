@@ -5,16 +5,21 @@ export interface ActionItem {
   collaborators: string | null;
   deadline: string | null;
   notes: string | null;
+  priority: string | null; // 'Cao' | 'Trung bình' | 'Thấp' or 'High' | 'Medium' | 'Low'
 }
 
 export interface Decision {
   decision: string;
+  isImportant?: boolean;
+  isBold?: boolean;
 }
 
 export interface TranscriptSegment {
   startTime: string;
   speaker?: string;
   text: string;
+  isImportant?: boolean;
+  isBold?: boolean;
 }
 
 export interface Overview {
@@ -35,3 +40,6 @@ export interface AnalysisResult {
   pendingIssues: string[];
   notesAndReferences: string[];
 }
+
+export type DocumentTemplate = 'standard' | 'summary' | 'technical';
+export type ExportFormat = 'docx' | 'xlsx' | 'gmail' | 'drive';

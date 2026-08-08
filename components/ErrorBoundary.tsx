@@ -55,13 +55,13 @@ export class ErrorBoundary extends Component<Props, State> {
           <div className="flex gap-3">
             <button
               onClick={this.handleReset}
-              className="bg-slate-800 hover:bg-slate-705 text-white font-black text-[11px] px-4.5 py-2.5 rounded-xl transition-all shadow-md active:scale-95"
+              className="bg-slate-800 hover:bg-slate-705 text-white font-black text-[11px] px-5 py-2.5 rounded-xl transition-all shadow-md active:scale-95"
             >
               Thử lại / Reset UI View
             </button>
             <button
               onClick={() => window.location.reload()}
-              className="bg-white hover:bg-slate-100 text-slate-750 border border-slate-200/80 font-black text-[11px] px-4.5 py-2.5 rounded-xl transition-all shadow-sm active:scale-95"
+              className="bg-white hover:bg-slate-100 text-slate-750 border border-slate-200/80 font-black text-[11px] px-5 py-2.5 rounded-xl transition-all shadow-sm active:scale-95"
             >
               Tải lại trang / Reload Page
             </button>
