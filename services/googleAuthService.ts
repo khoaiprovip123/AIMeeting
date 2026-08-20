@@ -27,13 +27,20 @@ setPersistence(auth, browserLocalPersistence).catch((err) => {
 const dbId = (firebaseConfig as any).firestoreDatabaseId;
 export const db = dbId ? getFirestore(app, dbId) : getFirestore(app);
 
-const provider = new GoogleAuthProvider();
-provider.addScope('https://www.googleapis.com/auth/gmail.compose');
-provider.addScope('https://www.googleapis.com/auth/drive');
-provider.addScope('https://www.googleapis.com/auth/tasks');
-provider.addScope('https://www.googleapis.com/auth/documents');
-provider.setCustomParameters({
+// Standard Google Auth Provider for App Login (No restricted scopes, prevents 403 access_denied error)
+const baseProvider = new GoogleAuthProvider();
+baseProvider.setCustomParameters({
   prompt: 'select_account'
+});
+
+// Advanced Google Workspace Provider (Only requested on-demand when user clicks Gmail/Drive/Tasks export)
+const workspaceProvider = new GoogleAuthProvider();
+workspaceProvider.addScope('https://www.googleapis.com/auth/gmail.compose');
+workspaceProvider.addScope('https://www.googleapis.com/auth/drive.file');
+workspaceProvider.addScope('https://www.googleapis.com/auth/tasks');
+workspaceProvider.addScope('https://www.googleapis.com/auth/documents');
+workspaceProvider.setCustomParameters({
+  prompt: 'consent'
 });
 
 let isSigningIn = false;
@@ -58,22 +65,55 @@ export const initAuth = (
   });
 };
 
-export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
+/**
+ * Standard Google Login:
+ * Authenticates the user into Firebase cleanly without triggering Google OAuth unverified app/403 blocks.
+ */
+export const googleSignIn = async (): Promise<{ user: User; accessToken: string | null } | null> => {
   try {
     isSigningIn = true;
-    const result = await signInWithPopup(auth, provider);
+    const result = await signInWithPopup(auth, baseProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (!credential?.accessToken) {
-      throw new Error('Failed to get access token from Google');
+    if (credential?.accessToken) {
+      cachedAccessToken = credential.accessToken;
+      localStorage.setItem('google_access_token', cachedAccessToken);
     }
-    cachedAccessToken = credential.accessToken;
-    localStorage.setItem('google_access_token', cachedAccessToken);
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
     console.error('Core sign in error:', error);
     throw error;
   } finally {
     isSigningIn = false;
+  }
+};
+
+/**
+ * On-demand Google Workspace authorization for Gmail/Drive/Tasks integration.
+ */
+export const requestWorkspaceAccess = async (): Promise<string> => {
+  try {
+    const result = await signInWithPopup(auth, workspaceProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (!credential?.accessToken) {
+      throw new Error('FAILED_TO_GET_WORKSPACE_TOKEN');
+    }
+    cachedAccessToken = credential.accessToken;
+    localStorage.setItem('google_access_token', cachedAccessToken);
+    return cachedAccessToken;
+  } catch (error: any) {
+    console.error('Workspace scope authorization error:', error);
+    const errText = (error?.message || error?.code || '').toLowerCase();
+    if (
+      errText.includes('access_denied') || 
+      errText.includes('403') || 
+      errText.includes('unverified') ||
+      errText.includes('blocked')
+    ) {
+      throw new Error(
+        'WORKSPACE_PERMISSION_BLOCKED: Dự án Google Cloud đang ở chế độ thử nghiệm (Testing). Vui lòng thêm email của bạn vào "Test Users" (Người dùng thử nghiệm) trong Google Cloud Console > Màn hình đồng ý OAuth (OAuth consent screen), hoặc tải trực tiếp tài liệu Word/Excel về máy tính.'
+      );
+    }
+    throw error;
   }
 };
 

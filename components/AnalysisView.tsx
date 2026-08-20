@@ -1,11 +1,11 @@
 
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import type { AnalysisResult, TranscriptSegment, DocumentTemplate, ExportFormat } from '../types';
+import type { AnalysisResult, TranscriptSegment, DocumentTemplate, ExportFormat, ActionItem } from '../types';
 import { ClipboardIcon, CheckIcon, TagIcon, CalendarIcon, ClockIcon, MapPinIcon, UsersIcon, BookOpenIcon, TrashIcon, DownloadIcon, EmailIcon } from './Icons';
 import { useTranslation } from '../i18n';
 import { geminiService } from '../services/geminiService';
-import { initAuth, googleSignIn, getAccessToken, createGmailDraft, uploadDocxToGoogleDrive, logout, syncTaskToGoogleTasks, syncAllActionItemsToGoogleTasks } from '../services/googleAuthService';
+import { initAuth, googleSignIn, requestWorkspaceAccess, getAccessToken, createGmailDraft, uploadDocxToGoogleDrive, logout, syncTaskToGoogleTasks, syncAllActionItemsToGoogleTasks } from '../services/googleAuthService';
 import type { User } from 'firebase/auth';
 import { HelpTooltip } from './HelpTooltip';
 
@@ -536,7 +536,7 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
         } catch (error: any) {
             if (error?.message === 'TOKEN_REQUIRED' || error?.message === 'TOKEN_EXPIRED') {
                 try {
-                    await googleSignIn();
+                    await requestWorkspaceAccess();
                     await syncTaskToGoogleTasks(item, result.overview.topic);
                     setSyncedTaskIndexes(prev => new Set(prev).add(index));
                     setTasksToast({
@@ -546,13 +546,13 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                             : `Added task "${item.task.slice(0, 32)}..." to Google Tasks!`
                     });
                     setTimeout(() => setTasksToast(null), 4000);
-                } catch (authErr) {
+                } catch (authErr: any) {
                     console.error("Google auth error:", authErr);
                     setTasksToast({
                         type: 'error',
-                        message: language === 'vi'
-                            ? 'Cần đăng nhập Google để đồng bộ Google Tasks.'
-                            : 'Google login required to sync to Google Tasks.'
+                        message: authErr?.message?.includes('WORKSPACE_PERMISSION_BLOCKED')
+                            ? (language === 'vi' ? 'Dự án đang ở chế độ thử nghiệm. Vui lòng thêm email vào Test Users trên Google Cloud Console.' : 'Project is in testing mode. Add your email to Test Users in Google Cloud Console.')
+                            : (language === 'vi' ? 'Cần cấp quyền để đồng bộ Google Tasks.' : 'Permission required to sync to Google Tasks.')
                     });
                     setTimeout(() => setTasksToast(null), 4000);
                 }
@@ -588,7 +588,7 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
         } catch (error: any) {
             if (error?.message === 'TOKEN_REQUIRED' || error?.message === 'TOKEN_EXPIRED') {
                 try {
-                    await googleSignIn();
+                    await requestWorkspaceAccess();
                     const { successCount } = await syncAllActionItemsToGoogleTasks(result.actionItems, result.overview.topic);
                     const allSet = new Set<number>();
                     result.actionItems.forEach((_, idx) => allSet.add(idx));
@@ -601,13 +601,13 @@ const ReportTabsView: React.FC<{ result: AnalysisResult; onUpdateResult?: (updat
                             : `Success! Synced ${successCount} tasks to Google Tasks.`
                     });
                     setTimeout(() => setTasksToast(null), 5000);
-                } catch (authErr) {
+                } catch (authErr: any) {
                     console.error("Google auth error:", authErr);
                     setTasksToast({
                         type: 'error',
-                        message: language === 'vi'
-                            ? 'Cần đăng nhập tài khoản Google để đồng bộ Google Tasks.'
-                            : 'Google login required to sync to Google Tasks.'
+                        message: authErr?.message?.includes('WORKSPACE_PERMISSION_BLOCKED')
+                            ? (language === 'vi' ? 'Dự án đang ở chế độ thử nghiệm. Vui lòng thêm email vào Test Users trên Google Cloud Console.' : 'Project is in testing mode. Add your email to Test Users in Google Cloud Console.')
+                            : (language === 'vi' ? 'Cần cấp quyền để đồng bộ Google Tasks.' : 'Permission required to sync to Google Tasks.')
                     });
                     setTimeout(() => setTasksToast(null), 4000);
                 }
@@ -1898,16 +1898,6 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
   const [driveError, setDriveError] = useState<string | null>(null);
   const [driveFileUrl, setDriveFileUrl] = useState<string | null>(null);
 
-  // Export Modal & Template Selection State
-  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState<DocumentTemplate>('standard');
-  const [selectedFormat, setSelectedFormat] = useState<ExportFormat>('docx');
-  const [includeTranscriptOption, setIncludeTranscriptOption] = useState<boolean>(true);
-
-  const openExportModal = (format: ExportFormat = 'docx') => {
-    setSelectedFormat(format);
-    setIsExportModalOpen(true);
-  };
 
   useEffect(() => {
     const unsubscribe = initAuth(
@@ -2034,17 +2024,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
     setDraftCreated(false);
 
     try {
-      let currentUser = googleUser;
       const token = await getAccessToken();
-      if (!currentUser || !token) {
-        const signInResult = await googleSignIn();
-        if (signInResult) {
-          currentUser = signInResult.user;
-          setGoogleUser(currentUser);
-        } else {
-          setIsGmailLoading(false);
-          return;
-        }
+      if (!token) {
+        await requestWorkspaceAccess();
       }
 
       const fileName = getRecommendedFileName(result, audioFile?.name);
@@ -2054,14 +2036,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
         await createGmailDraft(result, language, docBlob, `${fileName}.docx`);
       } catch (innerErr: any) {
         if (innerErr?.message === 'TOKEN_EXPIRED') {
-          console.log("Token expired, re-authenticating with Google...");
-          const signInResult = await googleSignIn();
-          if (signInResult) {
-            setGoogleUser(signInResult.user);
-            await createGmailDraft(result, language, docBlob, `${fileName}.docx`);
-          } else {
-            throw new Error(language === 'vi' ? 'Phiên làm việc hết hạn. Hãy đăng nhập lại.' : 'Session expired. Please sign in again.');
-          }
+          console.log("Token expired, re-authorizing Google Workspace...");
+          await requestWorkspaceAccess();
+          await createGmailDraft(result, language, docBlob, `${fileName}.docx`);
         } else {
           throw innerErr;
         }
@@ -2070,7 +2047,11 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
       setDraftCreated(true);
     } catch (err: any) {
       console.error("Gmail draft creation failed:", err);
-      setGmailError(err.message || (language === 'vi' ? "Không thể tạo email nháp trong Gmail của bạn." : "Failed to create draft email in your Gmail."));
+      setGmailError(
+        err?.message?.includes('WORKSPACE_PERMISSION_BLOCKED')
+          ? err.message
+          : (err.message || (language === 'vi' ? "Không thể tạo email nháp trong Gmail của bạn." : "Failed to create draft email in your Gmail."))
+      );
     } finally {
       setIsGmailLoading(false);
     }
@@ -2083,17 +2064,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
     setDriveFileUrl(null);
 
     try {
-      let currentUser = googleUser;
       const token = await getAccessToken();
-      if (!currentUser || !token) {
-        const signInResult = await googleSignIn();
-        if (signInResult) {
-          currentUser = signInResult.user;
-          setGoogleUser(currentUser);
-        } else {
-          setIsDriveLoading(false);
-          return;
-        }
+      if (!token) {
+        await requestWorkspaceAccess();
       }
 
       const fileName = getRecommendedFileName(result, audioFile?.name);
@@ -2104,14 +2077,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
         res = await uploadDocxToGoogleDrive(docBlob, `${fileName}.docx`, language);
       } catch (innerErr: any) {
         if (innerErr?.message === 'TOKEN_EXPIRED') {
-          console.log("Token expired, re-authenticating with Google...");
-          const signInResult = await googleSignIn();
-          if (signInResult) {
-            setGoogleUser(signInResult.user);
-            res = await uploadDocxToGoogleDrive(docBlob, `${fileName}.docx`, language);
-          } else {
-            throw new Error(language === 'vi' ? 'Phiên làm việc hết hạn. Hãy đăng nhập lại.' : 'Session expired. Please sign in again.');
-          }
+          console.log("Token expired, re-authorizing Google Workspace...");
+          await requestWorkspaceAccess();
+          res = await uploadDocxToGoogleDrive(docBlob, `${fileName}.docx`, language);
         } else {
           throw innerErr;
         }
@@ -2120,98 +2088,33 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
       setDriveFileUrl(res.webViewLink);
     } catch (err: any) {
       console.error("Google Drive upload failed:", err);
-      setDriveError(err.message || (language === 'vi' ? "Không thể tải tệp lên Google Drive của bạn." : "Failed to upload document to your Google Drive."));
+      setDriveError(
+        err?.message?.includes('WORKSPACE_PERMISSION_BLOCKED')
+          ? err.message
+          : (err.message || (language === 'vi' ? "Không thể tải tệp lên Google Drive của bạn." : "Failed to upload document to your Google Drive."))
+      );
     } finally {
       setIsDriveLoading(false);
     }
   };
 
-  const handleExecuteExport = async () => {
+  const handleExport = async (format: 'docx' | 'xlsx') => {
     if (!result) return;
     setIsExporting(true);
     const fileName = getRecommendedFileName(result, audioFile?.name);
-    const tplSuffix = selectedTemplate === 'summary' 
-      ? '_ExecutiveBrief' 
-      : selectedTemplate === 'technical' 
-        ? '_TechnicalReport' 
-        : '_StandardMoM';
-    const finalFileName = `${fileName}${tplSuffix}`;
-
     try {
-      if (selectedFormat === 'docx') {
-        const blob = await generateDocxBlob(result, transcript, selectedTemplate, includeTranscriptOption);
-        saveAs(blob, `${finalFileName}.docx`);
-        setIsExportModalOpen(false);
-      } else if (selectedFormat === 'xlsx') {
-        await exportXlsx(finalFileName, result, transcript, selectedTemplate, includeTranscriptOption);
-        setIsExportModalOpen(false);
-      } else if (selectedFormat === 'gmail') {
-        setIsGmailLoading(true);
-        setGmailError(null);
-        setDraftCreated(false);
-        try {
-          let currentUser = googleUser;
-          const token = await getAccessToken();
-          if (!currentUser || !token) {
-            const signInResult = await googleSignIn();
-            if (signInResult) {
-              currentUser = signInResult.user;
-              setGoogleUser(currentUser);
-            } else {
-              setIsGmailLoading(false);
-              setIsExporting(false);
-              return;
-            }
-          }
-          const blob = await generateDocxBlob(result, transcript, selectedTemplate, includeTranscriptOption);
-          await createGmailDraft(result, language, blob, `${finalFileName}.docx`);
-          setDraftCreated(true);
-          setIsExportModalOpen(false);
-        } catch (innerErr: any) {
-          console.error("Gmail draft creation failed:", innerErr);
-          setGmailError(innerErr.message || (language === 'vi' ? "Không thể tạo email nháp trong Gmail." : "Failed to create draft email in Gmail."));
-        } finally {
-          setIsGmailLoading(false);
-        }
-      } else if (selectedFormat === 'drive') {
-        setIsDriveLoading(true);
-        setDriveError(null);
-        setDriveFileUrl(null);
-        try {
-          let currentUser = googleUser;
-          const token = await getAccessToken();
-          if (!currentUser || !token) {
-            const signInResult = await googleSignIn();
-            if (signInResult) {
-              currentUser = signInResult.user;
-              setGoogleUser(currentUser);
-            } else {
-              setIsDriveLoading(false);
-              setIsExporting(false);
-              return;
-            }
-          }
-          const blob = await generateDocxBlob(result, transcript, selectedTemplate, includeTranscriptOption);
-          const res = await uploadDocxToGoogleDrive(blob, `${finalFileName}.docx`, language);
-          setDriveFileUrl(res.webViewLink);
-          setIsExportModalOpen(false);
-        } catch (innerErr: any) {
-          console.error("Google Drive upload failed:", innerErr);
-          setDriveError(innerErr.message || (language === 'vi' ? "Không thể tải tệp lên Google Drive." : "Failed to upload document to Google Drive."));
-        } finally {
-          setIsDriveLoading(false);
-        }
+      if (format === 'docx') {
+        const blob = await generateDocxBlob(result, transcript, 'standard', true);
+        saveAs(blob, `${fileName}.docx`);
+      } else if (format === 'xlsx') {
+        await exportXlsx(fileName, result, transcript, 'standard', true);
       }
     } catch (error) {
-      console.error(`Failed to export as ${selectedFormat}:`, error);
-      alert(t('exportError', { format: selectedFormat }));
+      console.error(`Failed to export as ${format}:`, error);
+      alert(t('exportError', { format }));
     } finally {
       setIsExporting(false);
     }
-  };
-
-  const handleExport = async (format: 'docx' | 'xlsx') => {
-    openExportModal(format);
   };
 
     const generateDocxBlob = async (
@@ -2254,7 +2157,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                     runs.push(new TextRun({
                         text: innerText,
                         bold: true,
-                        italic: baseItalic,
+                        italics: baseItalic,
                         size,
                         color,
                         font
@@ -2268,7 +2171,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                             runs.push(new TextRun({
                                 text: sub.slice(1, -1),
                                 bold: false,
-                                italic: true,
+                                italics: true,
                                 size,
                                 color,
                                 font
@@ -2277,7 +2180,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                             runs.push(new TextRun({
                                 text: sub,
                                 bold: false,
-                                italic: baseItalic,
+                                italics: baseItalic,
                                 size,
                                 color,
                                 font
@@ -2305,7 +2208,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
 
         const createHeading1 = (text: string, options?: { pageBreakBefore?: boolean }) => new Paragraph({
             spacing: { before: 360, after: 160 },
-            keepWithNext: true,
+            keepNext: true,
             pageBreakBefore: options?.pageBreakBefore,
             children: parseInlineMarkdownToTextRuns(text, {
                 baseSize: 26, // 13pt
@@ -2316,7 +2219,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
 
         const createHeading2 = (text: string) => new Paragraph({
             spacing: { before: 260, after: 120 },
-            keepWithNext: true,
+            keepNext: true,
             children: parseInlineMarkdownToTextRuns(text, {
                 baseSize: 22, // 11pt
                 baseColor: "0284C7", // Sky Blue Primary
@@ -2326,7 +2229,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
 
         const createHeading3 = (text: string) => new Paragraph({
             spacing: { before: 200, after: 100 },
-            keepWithNext: true,
+            keepNext: true,
             children: parseInlineMarkdownToTextRuns(text, {
                 baseSize: 20, // 10pt
                 baseColor: "0369A1",
@@ -2826,19 +2729,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                                 </span>
                             </div>
                             <button 
-                              onClick={() => openExportModal('docx')} 
-                              disabled={isExporting} 
-                              title={language === 'vi' ? 'Xuất báo cáo & Chọn Template' : 'Export Report & Select Template'}
-                              className="group flex items-center justify-center bg-gradient-to-r from-indigo-600 via-sky-600 to-teal-600 hover:from-indigo-500 hover:to-teal-500 text-white font-extrabold font-display h-9 px-4 rounded-full disabled:bg-slate-300 disabled:cursor-wait text-xs transition-all duration-300 shadow-[0_8px_20px_-4px_rgba(79,70,229,0.35)] active:scale-95 border-t border-white/30 select-none cursor-pointer flex-shrink-0"
-                            >
-                                <DownloadIcon className="w-4 h-4 flex-shrink-0 mr-1.5" />
-                                <span className="text-[11px]">
-                                    {language === 'vi' ? 'Xuất & Mẫu Template' : 'Export & Templates'}
-                                </span>
-                            </button>
-
-                            <button 
-                              onClick={() => openExportModal('docx')} 
+                              onClick={() => handleExport('docx')} 
                               disabled={isExporting} 
                               title={t('downloadDocx')}
                               className="group flex items-center justify-center bg-gradient-to-r from-sky-500 to-sky-600 hover:from-sky-400 hover:to-sky-500 text-white font-extrabold font-display h-9 px-3 hover:px-4 rounded-full disabled:bg-slate-300 disabled:cursor-wait text-xs transition-all duration-300 shadow-[0_8px_20px_-4px_rgba(14,165,233,0.3)] active:scale-95 border-t border-white/20 select-none overflow-hidden cursor-pointer"
@@ -2847,7 +2738,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                                 <span className="text-[11px]">.docx</span>
                             </button>
                             <button 
-                              onClick={() => openExportModal('xlsx')} 
+                              onClick={() => handleExport('xlsx')} 
                               disabled={isExporting} 
                               title={t('downloadXlsx')}
                               className="group flex items-center justify-center bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-white font-extrabold font-display h-9 px-3 hover:px-4 rounded-full disabled:bg-slate-300 disabled:cursor-wait text-xs transition-all duration-300 shadow-[0_8px_20px_-4px_rgba(16,185,129,0.3)] active:scale-95 border-t border-white/20 select-none overflow-hidden cursor-pointer"
@@ -2857,7 +2748,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                             </button>
 
                             <button 
-                              onClick={() => openExportModal('gmail')} 
+                              onClick={handleCreateGmailDraft} 
                               disabled={isGmailLoading} 
                               title={language === 'vi' ? 'Tạo nháp Gmail' : 'Create Gmail Draft'}
                               className={`group flex items-center justify-center font-extrabold font-display h-9 px-3 hover:px-4 rounded-full text-xs transition-all duration-300 active:scale-95 border-t border-white/20 select-none overflow-hidden cursor-pointer ${
@@ -2888,7 +2779,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                             </button>
 
                             <button 
-                              onClick={() => openExportModal('drive')} 
+                              onClick={handleUploadToDrive} 
                               disabled={isDriveLoading} 
                               title={language === 'vi' ? 'Lưu Google Drive' : 'Save to Google Drive'}
                               className={`group flex items-center justify-center font-extrabold font-display h-9 px-3 hover:px-4 rounded-full text-xs transition-all duration-300 active:scale-95 border-t border-white/20 select-none overflow-hidden cursor-pointer ${
@@ -3108,286 +2999,6 @@ export const AnalysisView: React.FC<AnalysisViewProps> = (props) => {
                 <TranscriptViewEditor {...props} />
             )}
         </div>
-
-        {/* Export Template Selection Modal */}
-        <AnimatePresence>
-          {isExportModalOpen && (
-            <div className="fixed inset-0 z-[300] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 animate-fade-in overflow-y-auto">
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95, y: 15 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 15 }}
-                transition={{ duration: 0.2 }}
-                className="relative w-full max-w-2xl bg-white/95 backdrop-blur-2xl rounded-3xl shadow-[0_25px_70px_rgba(15,23,42,0.25)] border border-white/80 overflow-hidden flex flex-col my-auto"
-              >
-                {/* Modal Header */}
-                <div className="flex items-center justify-between p-5 sm:p-6 border-b border-slate-100 bg-gradient-to-r from-slate-50/80 to-sky-50/50">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 to-sky-500 flex items-center justify-center text-white shadow-md shadow-indigo-200 flex-shrink-0">
-                      <DownloadIcon className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-base sm:text-lg font-black text-slate-800 tracking-tight font-display">
-                        {t('exportModalTitle')}
-                      </h3>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        {t('exportModalSubtitle')}
-                      </p>
-                    </div>
-                  </div>
-                  <button 
-                    type="button"
-                    onClick={() => setIsExportModalOpen(false)}
-                    className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition-colors cursor-pointer"
-                  >
-                    ✕
-                  </button>
-                </div>
-
-                {/* Modal Body */}
-                <div className="p-5 sm:p-6 space-y-6 max-h-[72vh] overflow-y-auto custom-scrollbar">
-                  
-                  {/* Section 1: Choose Template */}
-                  <div className="space-y-3">
-                    <label className="text-xs font-black uppercase tracking-wider text-slate-600 flex items-center space-x-1.5">
-                      <span>{t('templateTitle')}</span>
-                    </label>
-
-                    <div className="grid grid-cols-1 gap-3">
-                      
-                      {/* Option 1: Standard MoM */}
-                      <button
-                        type="button"
-                        onClick={() => setSelectedTemplate('standard')}
-                        className={`relative text-left p-4 rounded-2xl border transition-all duration-200 flex items-start space-x-3.5 cursor-pointer ${
-                          selectedTemplate === 'standard'
-                            ? 'bg-gradient-to-r from-sky-50/90 to-indigo-50/80 border-sky-500 shadow-md ring-2 ring-sky-400/40'
-                            : 'bg-white hover:bg-slate-50/80 border-slate-200/80 hover:border-slate-300'
-                        }`}
-                      >
-                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0 mt-0.5 ${
-                          selectedTemplate === 'standard' ? 'bg-sky-500 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
-                        }`}>
-                          📋
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-extrabold text-slate-800 font-display">
-                              {t('templateStandardTitle')}
-                            </span>
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 flex-shrink-0">
-                              {t('templateStandardBadge')}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                            {t('templateStandardDesc')}
-                          </p>
-                        </div>
-                        {selectedTemplate === 'standard' && (
-                          <div className="w-5 h-5 rounded-full bg-sky-500 text-white flex items-center justify-center flex-shrink-0 self-center">
-                            <CheckIcon className="w-3.5 h-3.5" />
-                          </div>
-                        )}
-                      </button>
-
-                      {/* Option 2: Executive Brief */}
-                      <button
-                        type="button"
-                        onClick={() => setSelectedTemplate('summary')}
-                        className={`relative text-left p-4 rounded-2xl border transition-all duration-200 flex items-start space-x-3.5 cursor-pointer ${
-                          selectedTemplate === 'summary'
-                            ? 'bg-gradient-to-r from-amber-50/90 to-orange-50/80 border-amber-500 shadow-md ring-2 ring-amber-400/40'
-                            : 'bg-white hover:bg-slate-50/80 border-slate-200/80 hover:border-slate-300'
-                        }`}
-                      >
-                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0 mt-0.5 ${
-                          selectedTemplate === 'summary' ? 'bg-amber-500 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
-                        }`}>
-                          ⚡
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-extrabold text-slate-800 font-display">
-                              {t('templateSummaryTitle')}
-                            </span>
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 flex-shrink-0">
-                              {t('templateSummaryBadge')}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                            {t('templateSummaryDesc')}
-                          </p>
-                        </div>
-                        {selectedTemplate === 'summary' && (
-                          <div className="w-5 h-5 rounded-full bg-amber-500 text-white flex items-center justify-center flex-shrink-0 self-center">
-                            <CheckIcon className="w-3.5 h-3.5" />
-                          </div>
-                        )}
-                      </button>
-
-                      {/* Option 3: Technical Detail */}
-                      <button
-                        type="button"
-                        onClick={() => setSelectedTemplate('technical')}
-                        className={`relative text-left p-4 rounded-2xl border transition-all duration-200 flex items-start space-x-3.5 cursor-pointer ${
-                          selectedTemplate === 'technical'
-                            ? 'bg-gradient-to-r from-indigo-50/90 to-violet-50/80 border-indigo-500 shadow-md ring-2 ring-indigo-400/40'
-                            : 'bg-white hover:bg-slate-50/80 border-slate-200/80 hover:border-slate-300'
-                        }`}
-                      >
-                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0 mt-0.5 ${
-                          selectedTemplate === 'technical' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
-                        }`}>
-                          🛠️
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-extrabold text-slate-800 font-display">
-                              {t('templateTechnicalTitle')}
-                            </span>
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 flex-shrink-0">
-                              {t('templateTechnicalBadge')}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                            {t('templateTechnicalDesc')}
-                          </p>
-                        </div>
-                        {selectedTemplate === 'technical' && (
-                          <div className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center flex-shrink-0 self-center">
-                            <CheckIcon className="w-3.5 h-3.5" />
-                          </div>
-                        )}
-                      </button>
-
-                    </div>
-                  </div>
-
-                  {/* Section 2: Choose Export Format */}
-                  <div className="space-y-3">
-                    <label className="text-xs font-black uppercase tracking-wider text-slate-600 flex items-center space-x-1.5">
-                      <span>{t('exportFormatTitle')}</span>
-                    </label>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                      
-                      {/* Word */}
-                      <button
-                        type="button"
-                        onClick={() => setSelectedFormat('docx')}
-                        className={`p-3 rounded-xl border font-semibold text-xs transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer ${
-                          selectedFormat === 'docx'
-                            ? 'bg-sky-500 text-white border-sky-600 shadow-sm ring-2 ring-sky-300'
-                            : 'bg-white text-slate-700 border-slate-200 hover:border-sky-300 hover:bg-sky-50/50'
-                        }`}
-                      >
-                        <span className="text-base">📄</span>
-                        <span>Word (.docx)</span>
-                      </button>
-
-                      {/* Excel */}
-                      <button
-                        type="button"
-                        onClick={() => setSelectedFormat('xlsx')}
-                        className={`p-3 rounded-xl border font-semibold text-xs transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer ${
-                          selectedFormat === 'xlsx'
-                            ? 'bg-emerald-600 text-white border-emerald-700 shadow-sm ring-2 ring-emerald-300'
-                            : 'bg-white text-slate-700 border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/50'
-                        }`}
-                      >
-                        <span className="text-base">📊</span>
-                        <span>Excel (.xlsx)</span>
-                      </button>
-
-                      {/* Gmail Draft */}
-                      <button
-                        type="button"
-                        onClick={() => setSelectedFormat('gmail')}
-                        className={`p-3 rounded-xl border font-semibold text-xs transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer ${
-                          selectedFormat === 'gmail'
-                            ? 'bg-rose-600 text-white border-rose-700 shadow-sm ring-2 ring-rose-300'
-                            : 'bg-white text-slate-700 border-slate-200 hover:border-rose-300 hover:bg-rose-50/50'
-                        }`}
-                      >
-                        <span className="text-base">✉️</span>
-                        <span>Gmail Draft</span>
-                      </button>
-
-                      {/* Google Drive */}
-                      <button
-                        type="button"
-                        onClick={() => setSelectedFormat('drive')}
-                        className={`p-3 rounded-xl border font-semibold text-xs transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer ${
-                          selectedFormat === 'drive'
-                            ? 'bg-amber-600 text-white border-amber-700 shadow-sm ring-2 ring-amber-300'
-                            : 'bg-white text-slate-700 border-slate-200 hover:border-amber-300 hover:bg-amber-50/50'
-                        }`}
-                      >
-                        <span className="text-base">☁️</span>
-                        <span>Google Drive</span>
-                      </button>
-
-                    </div>
-                  </div>
-
-                  {/* Section 3: Options */}
-                  <div className="pt-2 border-t border-slate-100">
-                    <label className="flex items-center space-x-3 cursor-pointer group select-none">
-                      <input
-                        type="checkbox"
-                        checked={includeTranscriptOption}
-                        onChange={(e) => setIncludeTranscriptOption(e.target.checked)}
-                        className="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 border-slate-300 cursor-pointer"
-                      />
-                      <span className="text-xs font-semibold text-slate-700 group-hover:text-slate-900 transition-colors">
-                        {t('optionIncludeTranscript')}
-                      </span>
-                    </label>
-                  </div>
-
-                </div>
-
-                {/* Modal Footer */}
-                <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
-                  <div className="text-xs text-slate-500 font-medium hidden sm:block">
-                    {language === 'vi' ? 'Sẵn sàng xuất file theo định dạng đã chọn.' : 'Ready to export in your selected template.'}
-                  </div>
-                  <div className="flex items-center space-x-2.5 w-full sm:w-auto justify-end">
-                    <button
-                      type="button"
-                      onClick={() => setIsExportModalOpen(false)}
-                      className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-600 font-bold text-xs transition-colors cursor-pointer"
-                    >
-                      {t('cancel')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleExecuteExport}
-                      disabled={isExporting || isGmailLoading || isDriveLoading}
-                      className="flex-1 sm:flex-initial px-5 py-2.5 rounded-xl bg-gradient-to-r from-sky-500 via-indigo-600 to-indigo-700 hover:from-sky-400 hover:to-indigo-600 text-white font-extrabold text-xs shadow-md shadow-sky-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-wait flex items-center justify-center space-x-2 cursor-pointer"
-                    >
-                      {(isExporting || isGmailLoading || isDriveLoading) ? (
-                        <>
-                          <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                          </svg>
-                          <span>{t('exporting')}</span>
-                        </>
-                      ) : (
-                        <>
-                          <span>{t('btnExportNow')}</span>
-                          <DownloadIcon className="w-4 h-4" />
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-              </motion.div>
-            </div>
-          )}
-        </AnimatePresence>
     </div>
   );
 };
